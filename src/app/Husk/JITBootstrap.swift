@@ -58,7 +58,18 @@ enum JITBootstrap {
     // 512 MiB since the native runtime runs Minecraft: its main library alone is a 354 MiB image that has to sit in this
     // region, with the stubs the loader places beside it. A larger prewarm is safe for QEMU, which is handed the
     // prewarmed region whenever it is at least what tb-size asks for.
-    static let jitBytes = 512 * 1024 * 1024
+    // A smaller region leaves room for Flutter's 4 GiB Dart cage on devices
+    // whose signing profile cannot grant extended virtual addressing. Keep
+    // the default large enough for Minecraft; a device may use a smaller budget.
+    static let jitBytes: Int = {
+        let defaults = UserDefaults.standard
+        let key = "husk.jit.megabytes"
+        let mib = defaults.integer(forKey: key)
+        guard [128, 256, 512].contains(mib) else { return 512 * 1024 * 1024 }
+        // Remember a developer launch override for later launches from Home.
+        defaults.set(mib, forKey: key)
+        return mib * 1024 * 1024
+    }()
 
     /// True once the region is held. The memory budget needs this: after a
     /// prewarm the JIT is already counted in the footprint, so subtracting it

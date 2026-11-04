@@ -480,12 +480,18 @@ static bool launch(int engine, const char *apk, const char *data_dir, void *meta
     if (!tl_session_restart()) { atomic_store(&A.state, HUSK_UNITY_FAILED); return false; }
     if (engine == ENGINE_JAVA) {
         // JIT bootstrap reserves a 4 GiB pointer-compression cage for Dart/V8.
-        // Java does not consume it: keeping it fills the small address window
-        // of a free-signed iOS app, denying pthread stacks and even small arrays.
-        // The allocator only releases an unused cage, never a live guest mapping.
-        void husk_release_unused_compressed_heap(void);
-        husk_release_unused_compressed_heap();
-        tl_log_line("javaapp: released unused pointer-compression reservation before launch");
+        // Flutter also starts through the Java driver, then loads Dart. Keep
+        // its early reservation: after JIT aliases are mapped, Dart cannot
+        // obtain another aligned cage in a free-signed app's address window.
+        // Other Java apps need that space for their stacks and arrays.
+        if (tl_flutter_is_app(apk)) {
+            tl_log_line("javaapp: keeping pointer-compression reservation for Flutter");
+        } else {
+            // Only an unused cage is released, never a live guest mapping.
+            void husk_release_unused_compressed_heap(void);
+            husk_release_unused_compressed_heap();
+            tl_log_line("javaapp: released unused pointer-compression reservation before launch");
+        }
     }
     A.engine = engine;
     snprintf(A.apk, sizeof(A.apk), "%s", apk);
