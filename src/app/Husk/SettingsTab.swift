@@ -640,6 +640,8 @@ struct JITSettings: View {
     @AppStorage(JITCoordinator.autoEnableKey) private var autoJIT = false
     @AppStorage(JITCoordinator.trollStoreAutoKey) private var trollStoreJIT = true
     @State private var keepAttached = JITBootstrap.keepDebuggerAttached
+    @AppStorage(JITMemoryBudget.fallbackKey) private var fallbackMiB = JITMemoryBudget.defaultFallbackMiB
+    @State private var fallbackText = String(JITMemoryBudget.fallbackMiB())
 
     private var pairingLabel: String {
         switch jit.pairingSource {
@@ -656,6 +658,34 @@ struct JITSettings: View {
             }
             .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
+
+            Section {
+                HStack {
+                    Text("Fallback memory")
+                    Spacer()
+                    TextField("512", text: $fallbackText)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 90)
+                        .accessibilityLabel("Fallback JIT memory in MB")
+                    Text("MB").foregroundStyle(.secondary)
+                }
+                Button("Save memory setting") {
+                    if let value = JITMemoryBudget.validFallback(fallbackText) {
+                        fallbackMiB = value
+                        fallbackText = String(value)
+                    }
+                }
+                .disabled(JITMemoryBudget.validFallback(fallbackText) == nil
+                          || JITMemoryBudget.validFallback(fallbackText) == fallbackMiB)
+                if !fallbackText.isEmpty, JITMemoryBudget.validFallback(fallbackText) == nil {
+                    Text("Enter a whole number from 2 to 1024 MB.").font(.caption).foregroundStyle(.orange)
+                }
+            } header: {
+                Text("JIT memory")
+            } footer: {
+                Text("Used only when no app has been selected or its memory requirement is unknown. App estimates and measured use take priority. Reopen Husk to change memory that has already been allocated.")
+            }
 
             Section {
                 Picker("Method", selection: $jit.method) {

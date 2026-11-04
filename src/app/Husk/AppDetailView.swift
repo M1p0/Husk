@@ -56,6 +56,7 @@ enum LibraryRoute: Hashable {
     /// At launch: the game Husk was closed to switch to, opened and started.
     func resumeSwitch() {
         guard let id = UserDefaults.standard.string(forKey: Self.switchKey) else { return }
+        _ = JITBootstrap.selectBudget(for: id)
         UserDefaults.standard.removeObject(forKey: Self.switchKey)
         HuskLog.log("ui", "opening \(id), which Husk was closed to switch to")
         tab = .library

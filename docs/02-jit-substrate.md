@@ -152,12 +152,27 @@ the first thing to measure on device.
 
 ### Adaptive app budgets
 
-Translation-layer apps now start with a 2 MiB budget and keep their own profile in
-`Documents/jit-memory.json`. Observed use is rounded up to a power of two. A confirmed
-code-region exhaustion advances through doubling steps to cover the failed allocation,
-up to an automatic ceiling of 1 GiB. Full Android keeps a 256 MiB minimum to match
-`tb-size`; PS4 keeps its existing 512 MiB baseline and is not tuned by this policy.
-The developer `husk.jit.megabytes` override remains a minimum.
+Translation-layer apps keep their own profile in `Documents/jit-memory.json`. Before
+claiming JIT, the app registers estimates from the scanner's ELF image pages (including
+BSS and segment gaps), instruction-rewriting allowances and a 12.5% reserve. Duplicate
+libraries in APK splits count once and other CPU variants are excluded. Estimates are
+rounded up to a power of two, starting at 2 MiB, with a 1 GiB automatic ceiling.
+Unreadable images and the separate ARM32 path are treated as unknown.
+
+**Settings > JIT & sideload > JIT memory > Fallback memory** accepts an integer from
+2 to 1024 MB. It defaults to 512 MB and is saved globally as
+`husk.jit.fallbackMegabytes`. This exact value is used only when no app has been
+selected in the current process or no estimate/measurement exists for it. A known
+app's budget takes priority even if it is smaller than the fallback. The former
+`husk.jit.megabytes` minimum override is no longer applied. Full Android's known
+256 MiB requirement matches `tb-size`; PS4 keeps its existing 512 MiB baseline.
+
+Actual used code bytes are sampled during a run and again on a normal exit, including
+Fully Close APK. The next budget is recalculated from the measured peak plus reserve;
+this can reduce an overestimate, while retaining known requirements from earlier
+capacity failures. Code left behind by a preceding APK is excluded from this app's
+measurement. Pausing and resuming preserves the session's measurement baseline.
+An updated APK invalidates the old measurements and is estimated again.
 
 The allocator atomically commits the run UUID, held capacity, used bytes and refused
 request before returning failure. The next cold launch can therefore adjust the
@@ -167,10 +182,13 @@ without this evidence, and terminal system/Java memory exhaustion do not increas
 the budget. Frames continuing after a refused allocation clear that evidence; each
 run can increase its saved budget only once.
 
-The held region remains fixed for the process. A selected game whose saved requirement
-exceeds it asks Husk to close and reopen before entering the engine. The next launch
-prewarms the selected profile, and the existing game-switch mechanism resumes the game.
-Moving to a smaller profile takes effect at the next cold launch as well.
+The held region remains fixed for the process. An explicit Play or Turn On JIT to Play
+selects the app before allocation; a cold launch does not assume the last played game
+is the next one. A selected game whose requirement exceeds the unused region asks
+Husk to close and reopen before entering the engine. The existing game-switch marker
+identifies the requested app at the next launch. Moving to a smaller region takes
+effect at the next allocation as well. Closing an APK alone does not reclaim the
+shared process's code pages or grow/shrink its held JIT mapping.
 
 Validation: `sh tests/translation-layer/run_jit_budget.sh` exercises the real macOS
 dual-mapped allocator and the persistence/recovery policy. Device verification is

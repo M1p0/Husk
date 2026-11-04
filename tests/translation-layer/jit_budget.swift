@@ -30,11 +30,12 @@ import Foundation
         let reopened = budget("crash")
         let grown = reopened.recover(log: "*** FATAL SIGNAL 11")
         assert(grown?.previousMiB == 2 && grown?.nextMiB == 4)
-        assert(budget("crash").selectedMiB == 4)
+        assert(budget("crash").megabytes(for: "small") == 4)
+        assert(budget("crash").allocationMiB(fallbackMiB: 192) == 192) // A cold launch cannot predict the next game.
         assert(reopened.recover(log: "") == nil)
         try exhaust(reopened, run, used: mib, request: 2 * mib)
         assert(reopened.recover(log: "") == nil) // Several failing allocations in one run must not double repeatedly.
-        assert(budget("crash").selectedMiB == 4)
+        assert(budget("crash").megabytes(for: "small") == 4)
 
         // A known large request advances through doubling steps without requiring one crash per step.
         let large = budget("large")
@@ -76,7 +77,7 @@ import Foundation
         let measured = budget("measured")
         _ = measured.begin(appID: "game", capacityBytes: 512 * mib)
         measured.recordUsage(bytes: 96 * mib, madeProgress: true)
-        assert(budget("measured").selectedMiB == 128)
+        assert(budget("measured").megabytes(for: "game") == 128)
         measured.recordUsage(bytes: 1, madeProgress: true)
         assert(measured.selectedMiB == 128)
 
@@ -98,6 +99,78 @@ import Foundation
         assert(FileManager.default.fileExists(atPath: background.runURL.path))
         background.end()
         assert(!FileManager.default.fileExists(atPath: background.runURL.path))
-        print("PASS: JIT budget persistence, doubling, measurements, crash attribution, OOM exclusion, lifecycle and ceiling")
+
+        // Missing estimates use the exact manually entered MB value. A known app always wins, in both directions.
+        assert(JITMemoryBudget.validFallback(" 192 ") == 192)
+        for invalid in ["", "0", "1", "-32", "1025", "3.5", "512MB", String(Int.max)] {
+            assert(JITMemoryBudget.validFallback(invalid) == nil)
+        }
+        let fallback = budget("fallback")
+        _ = fallback.select("unknown")
+        assert(fallback.allocationMiB(fallbackMiB: 192) == 192)
+        assert(fallback.allocationMiB(fallbackMiB: -1) == 512)
+        fallback.updateEstimate(appID: "known", bytes: 12 * mib, identity: "v1")
+        _ = fallback.select("known")
+        assert(fallback.allocationMiB(fallbackMiB: 1024) == 16)
+        assert(fallback.allocationMiB(fallbackMiB: 2) == 16)
+        assert(fallback.allocationMiB(fallbackMiB: 1024, androidAtLaunch: true) == 256)
+        assert(budget("new-launch").allocationMiB(fallbackMiB: 1024, androidAtLaunch: true) == 256)
+        _ = fallback.select(JITMemoryBudget.androidID)
+        assert(fallback.allocationMiB(fallbackMiB: 1024) == 256)
+        let suiteName = "husk-budget-tests-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        assert(JITMemoryBudget.fallbackMiB(defaults: defaults) == 512)
+        defaults.set(192, forKey: JITMemoryBudget.fallbackKey)
+        assert(JITMemoryBudget.fallbackMiB(defaults: defaults) == 192)
+        defaults.set(0, forKey: JITMemoryBudget.fallbackKey)
+        assert(JITMemoryBudget.fallbackMiB(defaults: defaults) == 512)
+
+        typealias Library = JITMemoryBudget.Library
+        let big = Library(name: "libminecraftpe.so", abi: "arm64-v8a", pages: 354 * mib / 16384,
+                          codePages: 200 * mib / 16384, systemCalls: 100, imports: 500)
+        let estimate = JITMemoryBudget.estimateBytes(libraries: [big], complete: true)!
+        assert(estimate > 354 * mib && JITMemoryBudget.roundedMiB(bytes: estimate) == 512)
+        assert(JITMemoryBudget.estimateBytes(libraries: [big, big], complete: true) == estimate)
+        assert(JITMemoryBudget.estimateBytes(libraries: [big], complete: false) == nil)
+        let unreadable = Library(name: "bad.so", abi: "arm64-v8a", pages: nil, codePages: nil, systemCalls: 0, imports: 0)
+        assert(JITMemoryBudget.estimateBytes(libraries: [unreadable], complete: true) == nil)
+        let otherABI = Library(name: "libminecraftpe.so", abi: "x86_64", pages: 65000, codePages: 65000, systemCalls: 0, imports: 0)
+        assert(JITMemoryBudget.estimateBytes(libraries: [big, otherABI], complete: true) == estimate)
+        assert(JITMemoryBudget.estimateBytes(libraries: [], complete: true) == 2 * mib)
+
+        // Exit replaces a speculative 512 MiB estimate with this app's measured peak plus reserve, not the whole region.
+        // Earlier APKs in the same process must not be charged to the new app's next cold launch.
+        let exit = budget("exit")
+        exit.updateEstimate(appID: "game", bytes: 500 * mib, identity: "v1")
+        _ = exit.begin(appID: "game", capacityBytes: 512 * mib, initialUsedBytes: 256 * mib)
+        exit.recordUsage(bytes: 296 * mib, madeProgress: true)
+        assert(exit.calibrateOnExit(bytes: 304 * mib, successful: false) == nil)
+        assert(exit.calibrateOnExit(bytes: 304 * mib, successful: true) == 64)
+        exit.end()
+        exit.updateEstimate(appID: "game", bytes: 500 * mib, identity: "v1")
+        assert(exit.megabytes(for: "game") == 64) // A report reload must not undo the measurement.
+        exit.updateEstimate(appID: "game", bytes: 200 * mib, identity: "v2")
+        assert(exit.megabytes(for: "game") == 256) // Updated APKs are estimated again.
+
+        let peak = budget("peak")
+        _ = peak.begin(appID: "game", capacityBytes: 256 * mib, initialUsedBytes: 100 * mib)
+        peak.recordUsage(bytes: 180 * mib, madeProgress: true)
+        assert(peak.calibrateOnExit(bytes: 140 * mib, successful: true) == 128)
+        peak.suspend()
+        peak.resume()
+        let resumed = peak.begin(appID: "game", capacityBytes: 256 * mib, initialUsedBytes: 180 * mib)
+        assert(resumed.initialUsedBytes == 100 * mib) // Pausing/resuming does not reset the session's baseline.
+        peak.end()
+
+        let protected = budget("failure-floor")
+        let failed = protected.begin(appID: "game", capacityBytes: 2 * mib)
+        try exhaust(protected, failed, request: 40 * mib)
+        assert(protected.recover(log: "")?.nextMiB == 64)
+        protected.end()
+        _ = protected.begin(appID: "game", capacityBytes: 64 * mib)
+        protected.recordUsage(bytes: 6 * mib, madeProgress: true)
+        assert(protected.calibrateOnExit(bytes: 6 * mib, successful: true) == 64)
+        print("PASS: JIT estimates, fallback precedence/validation, exit calibration, APK updates, crash recovery and lifecycle")
     }
 }

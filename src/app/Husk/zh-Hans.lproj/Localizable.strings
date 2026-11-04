@@ -443,3 +443,12 @@
 "Husk stays open. The next launch starts the app from the beginning. Saved data is kept; unsaved changes may be lost." = "Husk 会保持打开，下次启动此应用时会从头开始运行。已保存的数据会保留，未保存的内容可能丢失。";
 "The APK is still stopping" = "APK 尚未完全停止";
 "A task in the app has not finished yet. Wait a moment and try Fully Close APK again. Husk has kept the session to avoid losing or corrupting its data." = "应用中仍有任务未结束。请稍等后再次点击“彻底关闭 APK”。Husk 已保留当前会话，避免损坏数据。";
+
+"JIT memory" = "JIT 内存";
+"Fallback memory" = "后备内存";
+"Fallback JIT memory in MB" = "后备 JIT 内存，单位 MB";
+"Save memory setting" = "保存内存设置";
+"Enter a whole number from 2 to 1024 MB." = "请输入 2 至 1024 之间的整数，单位 MB。";
+"Used only when no app has been selected or its memory requirement is unknown. App estimates and measured use take priority. Reopen Husk to change memory that has already been allocated." = "仅在尚未选择应用或无法获取应用所需内存时使用；应用的预估和实测用量优先。已分配的内存需要重开 Husk 后才能改变。";
+"Code memory" = "已分配代码内存";
+"Next launch budget" = "待申请代码内存";

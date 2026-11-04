@@ -12,12 +12,14 @@ import SwiftUI
               husk_native_loaded_apk().map({ String(cString: $0) }) == apk else { return false }
         closing = true
         defer { closing = false }
+        let previousState = husk_unity_state()
+        CrashReport.observeBudget(state: previousState, frames: husk_unity_frames())
         let stopped = await Task.detached(priority: .userInitiated) { husk_native_close() }.value
         guard stopped else { return false }
         TLUnityScreen.discard(apk: apk)
         AppWindows.shared.close(app)
         NotificationCenter.default.post(name: TLUnityUIView.huskStopPlaying, object: nil)
-        CrashReport.gameEnded()
+        CrashReport.gameEnded(normallyClosed: previousState == Int32(HUSK_UNITY_RUNNING) || previousState == Int32(HUSK_UNITY_ENDED))
         revision += 1
         HuskLog.log("ui", "APK fully closed; next launch creates a new session: \(app.label)")
         return true

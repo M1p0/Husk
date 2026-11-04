@@ -45,31 +45,23 @@ enum JITBootstrap {
                          + "return 0 instead of killing the process")
     }
 
-    /// Apps start at 2 MiB and learn their budget. Full Android needs at least its 256 MiB TCG cache;
-    /// PS4 keeps its existing 512 MiB baseline because its separate allocator is not tuned here.
-    /// Keep the developer override as a minimum, allowing recovery to grow beyond it when necessary.
-    private static let manualMinimumMiB: Int = {
-        let defaults = UserDefaults.standard
-        let key = "husk.jit.megabytes"
-        let override = defaults.integer(forKey: key)
-        guard (2...JITMemoryBudget.maximumMiB).contains(override) else { return 2 }
-        // Preserve developer launch arguments for subsequent launches from Home, as before automatic sizing.
-        defaults.set(override, forKey: key)
-        return JITMemoryBudget.roundedMiB(bytes: override * JITMemoryBudget.mib)
-    }()
-
+    /// App estimates and measurements take priority. The global MB setting is a fallback, never an app's minimum.
     static var jitBytes: Int {
-        let automatic = Onboarding.autoStart ? max(256, JITMemoryBudget.shared.selectedMiB) : JITMemoryBudget.shared.selectedMiB
-        return max(manualMinimumMiB, automatic) * JITMemoryBudget.mib
+        JITMemoryBudget.shared.allocationMiB(fallbackMiB: JITMemoryBudget.fallbackMiB(), androidAtLaunch: Onboarding.autoStart)
+            * JITMemoryBudget.mib
     }
 
     /// A live one-shot mapping cannot grow after the debugger has gone away. Save the selected app for the next launch
     /// and let the caller offer a clean restart before entering its engine with an already-known undersized region.
     static func selectBudget(for appID: String) -> Bool {
-        let required = JITMemoryBudget.shared.select(appID) * JITMemoryBudget.mib
+        _ = JITMemoryBudget.shared.select(appID)
+        let required = jitBytes
         husk_jit_budget_set_target_bytes(jitBytes)
         let held = husk_jit_budget_region_bytes()
-        return held == 0 || held >= required
+        let continuing = JITMemoryBudget.shared.activeRun?.appID == appID && husk_native_loaded_apk() != nil
+        // Closed Java APKs leave their old code pages in this process. A different app needs room in the unused tail.
+        let used = continuing ? 0 : tl_xmem_used()
+        return held == 0 || (used <= held && required <= held - used)
     }
 
     /// True once the region is held. The memory budget needs this: after a

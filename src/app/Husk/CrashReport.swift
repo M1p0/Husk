@@ -72,10 +72,14 @@ final class CrashReport: ObservableObject {
     /// no background notice at all (it is merely inactive while the switcher is up), which read as a crash every time
     /// (a Geometry Dash session closed that way). The note goes when Husk stops being active and comes back with it.
     static func gameStarted(_ app: TLApp) {
-        if running?.id != app.id, !JITLess.enabled {
+        let abis = app.report?.abis ?? []
+        let measuresNativeRegion = abis.isEmpty || abis.contains("arm64-v8a")
+        if running?.id != app.id, !JITLess.enabled, measuresNativeRegion {
             lastBudgetFrames = 0
             let held = husk_jit_budget_region_bytes()
-            _ = JITMemoryBudget.shared.begin(appID: app.id, capacityBytes: held > 0 ? held : JITBootstrap.jitBytes)
+            _ = JITMemoryBudget.shared.begin(appID: app.id, capacityBytes: held > 0 ? held : JITBootstrap.jitBytes,
+                                           initialUsedBytes: tl_xmem_used())
+            JITMemoryBudget.shared.resume()
             watchBudget()
         }
         running = app
@@ -89,8 +93,10 @@ final class CrashReport: ObservableObject {
             })
             observers.append(nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
                 writeMarker()
-                JITMemoryBudget.shared.resume()
-                watchBudget()
+                if running != nil {
+                    JITMemoryBudget.shared.resume()
+                    watchBudget()
+                }
             })
         }
     }
@@ -102,14 +108,28 @@ final class CrashReport: ObservableObject {
     }
 
     /// The game was closed the normal way.
-    static func gameEnded() {
+    static func gameEnded(normallyClosed: Bool = false) {
         // Capture a soft loader failure even if its view closes before the next poll. Simply pausing a game is not failure.
         let state = husk_unity_state()
         if state == Int32(HUSK_UNITY_FAILED) || state == Int32(HUSK_UNITY_ENDED) {
             recoverBudget(log: HuskLog.recentLines().joined(separator: "\n"))
         }
+        let log = HuskLog.recentLines().joined(separator: "\n")
+        let successful = (normallyClosed || state == Int32(HUSK_UNITY_RUNNING) || state == Int32(HUSK_UNITY_ENDED))
+            && state != Int32(HUSK_UNITY_FAILED) && !JITMemoryBudget.systemMemoryWasLow(log)
+        if state == Int32(HUSK_UNITY_RUNNING) {
+            JITMemoryBudget.shared.recordUsage(bytes: tl_xmem_used(), madeProgress: false)
+        }
+        if let size = JITMemoryBudget.shared.calibrateOnExit(bytes: tl_xmem_used(), successful: successful) {
+            HuskLog.log("jit", "APK exit measured; next code-memory budget \(size) MiB")
+        }
         husk_jit_budget_watch(nil, nil)
-        JITMemoryBudget.shared.end()
+        if !normallyClosed && state == Int32(HUSK_UNITY_RUNNING) && husk_native_loaded_apk() != nil {
+            // Leaving a screen pauses an APK. Keep its measurement baseline if the same session resumes later.
+            JITMemoryBudget.shared.suspend()
+        } else {
+            JITMemoryBudget.shared.end()
+        }
         running = nil
         try? FileManager.default.removeItem(at: marker)
     }

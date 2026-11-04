@@ -78,6 +78,8 @@ struct HuskApp: App {
         // Then the trap guard: without it, any brk we issue when StikDebug is
         // absent kills the process outright rather than returning an error.
         JITBootstrap.installTrapGuard()
+        // Register APK estimates before a view or an automatic attach can ask for executable memory.
+        _ = TranslationLayerStore.shared
 
         // Android no longer starts by itself unless someone turns that on: once, for everyone who had it from the old default.
         let d = UserDefaults.standard

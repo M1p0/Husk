@@ -309,9 +309,10 @@ struct GamePage: View {
         }
         .id(jit.attachGeneration)
         .onAppear {
-            if !JITLess.enabled { _ = JITBootstrap.selectBudget(for: app.id) }
             // Kept until JIT is on: this page is rebuilt when it attaches (.id above), and plays then.
-            guard Router.shared.autoPlay == app.id, blockedBy == nil, Launcher.jitOn || JITLess.enabled else { return }
+            guard Router.shared.autoPlay == app.id, blockedBy == nil else { return }
+            if !JITLess.enabled { _ = JITBootstrap.selectBudget(for: app.id) }
+            guard Launcher.jitOn || JITLess.enabled else { return }
             Router.shared.autoPlay = nil
             play()
         }
@@ -545,8 +546,9 @@ struct PS4GamePage: View {
         }
         .id(jit.attachGeneration)
         .onAppear {
+            guard Router.shared.autoPlay == game.libraryID, blockedBy == nil, PS4Store.available else { return }
             _ = JITBootstrap.selectBudget(for: game.libraryID)
-            guard Router.shared.autoPlay == game.libraryID, Launcher.jitOn, blockedBy == nil, PS4Store.available else { return }
+            guard Launcher.jitOn else { return }
             Router.shared.autoPlay = nil
             playPS4()
         }

@@ -166,6 +166,22 @@ struct TLApp: Identifiable {
     /// Whether its manifest files it as a game (android:appCategory="game" or isGame): read for Flutter apps, which are apps
     /// unless they say otherwise.
     var isGameCategory: Bool { apks.first.map { husk_apk_is_game($0) != 0 } ?? false }
+
+    /// Read the scanner's ELF memory spans, including BSS. APK size includes assets and is not a code-memory estimate.
+    func updateJITEstimate() {
+        let libraries = (report?.libraries ?? []).map {
+            JITMemoryBudget.Library(name: $0.name, abi: $0.abi, pages: $0.pages, codePages: $0.execPages,
+                                    systemCalls: $0.svc ?? 0, imports: $0.imports ?? 0)
+        }
+        let estimate = JITMemoryBudget.estimateBytes(libraries: libraries, complete: report?.ok == true)
+        let identity = "elf-pages-v1|" + apks.sorted().map { path -> String in
+            let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+            let size = (attrs?[.size] as? NSNumber)?.uint64Value ?? 0
+            let modified = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            return "\((path as NSString).lastPathComponent):\(size):\(modified)"
+        }.joined(separator: "|")
+        JITMemoryBudget.shared.updateEstimate(appID: id, bytes: estimate, identity: identity)
+    }
 }
 
 // MARK: - Store
@@ -196,6 +212,7 @@ final class TranslationLayerStore: ObservableObject {
         apps = dirs.compactMap(Self.load).sorted {
             $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending
         }
+        apps.forEach { $0.updateJITEstimate() }
         rescanStale()
         PS4Store.shared.reload()   // the PS4 games, which Files may have changed too
     }
@@ -208,6 +225,7 @@ final class TranslationLayerStore: ObservableObject {
         apps = dirs.compactMap(Self.load).sorted {
             $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending
         }
+        apps.forEach { $0.updateJITEstimate() }
     }
 
     /// Icons are drawn again once per run of Husk at most: a newly added app already has the current kind.
