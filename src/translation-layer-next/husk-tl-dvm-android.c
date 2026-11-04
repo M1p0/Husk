@@ -1117,6 +1117,9 @@ static void log_pending_stack(void)
 {
     jobj *e = tl_jni_pending_object();
     if (!e) return;
+    // The allocation failure was already written by dvm_out_of_memory. Java's
+    // stack formatter allocates more strings and arrays from the same full heap.
+    if (e->cls && !strcmp(e->cls->name, "java/lang/OutOfMemoryError")) return;
     tl_jni_clear();
     jvalue a[1] = { L(e) }, r;
     if (!tl_dvm_call_static("android/util/Log", "getStackTraceString", "(Ljava/lang/Throwable;)Ljava/lang/String;", a, &r)) { tl_jni_clear(); return; }

@@ -41,10 +41,16 @@ launches also release the unused Dart/V8 address reservation to leave room for
 threads and heap allocations on iOS. Certificate loading avoids an invalid
 PKCS#12 passphrase value that could crash Husk at startup.
 
+Java string allocation failures now propagate a preallocated `OutOfMemoryError`
+instead of dereferencing a null buffer. Legacy mobile-network queries return a
+disconnected `NetworkInfo`, so PicACG can check both mobile and Wi-Fi when scrolling.
+
 Framework layout/input regressions: `python3 tests/java-framework/run.py` (a host
 JDK is required; set `HUSK_JDK` if needed). Address-reservation regressions:
 `sh tests/translation-layer/run_compressed_heap.sh` on macOS. The native web hit
 test's build command is in `tests/translation-layer/web_hit.m`.
+String allocation fault injection: `sh tests/translation-layer/run_string_oom.sh`
+(macOS, a host JDK/R8, and the boot jars in `build/java-runtime`).
 
 - **Translation layer** — the game’s own 64-bit Android code runs on the iPhone. Husk stands in for Android around it (C library, Java, GL, Vulkan, audio, input). No Android boot; a game starts in seconds.
 - **Emulation** — a full LineageOS guest under QEMU, for apps the translation layer cannot run yet.
