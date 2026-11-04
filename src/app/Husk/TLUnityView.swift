@@ -822,6 +822,7 @@ final class TLUnityModel: ObservableObject {
         case Int32(HUSK_UNITY_RUNNING):  return "Running"
         case Int32(HUSK_UNITY_FAILED):   return "Could not start — see the log"
         case Int32(HUSK_UNITY_ENDED):    return "The game exited"
+        case Int32(HUSK_UNITY_STOPPING): return "Closing APK…"
         default:                         return "Starting"
         }
     }
@@ -983,6 +984,7 @@ struct TLCocosAttemptView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: TLUnityUIView.appClosedItself)) { _ in dismiss() }
         .overlay { if let d = stoppedWhy { AppStoppedOverlay(app: app, diagnosis: d) { dismiss() } } }
+        .overlay { APKStoppingOverlay(app: app) { dismiss() } }
     }
 
     /// While the pad is being edited: what to do with the control picked, in a small panel in the middle of the screen.

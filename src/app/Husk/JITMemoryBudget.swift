@@ -137,6 +137,22 @@ final class JITMemoryBudget {
         return androidAtLaunch ? max(256, requested) : requested
     }
 
+    /// A cold measured budget can include the Java runtime's process-lifetime images. Those remain resident after close.
+    /// Still reserve the app's own estimated images (bounded by its calibrated budget), and give unknown apps no credit.
+    func additionalBytes(for appID: String, coldBytes: Int, sharedBytes: Int) -> Int {
+        guard let profile = configuration.apps[appID], let estimate = profile.estimatedBytes else { return coldBytes }
+        let shared = max(0, sharedBytes)
+        var additional = max(0, coldBytes - shared)
+        // A rounded cold capacity includes unused reserve. Use the measured peak when available, keeping fresh headroom
+        // and the app-image estimate as a floor; app-specific pages retained from earlier runs still occupy the region.
+        if shared > 0, profile.confirmed, let peak = profile.observedPeakBytes {
+            additional = min(additional, Self.withHeadroom(max(0, peak - shared)))
+        }
+        let appImages = min(coldBytes, max(0, estimate))
+        let failedRequest = min(coldBytes, max(0, profile.failedRequiredBytes ?? 0))
+        return max(additional, appImages, failedRequest)
+    }
+
     /// New APK contents invalidate old measurements. A rescan of unchanged APKs can refine the static estimate without
     /// throwing away measurements, or the larger budget learned from an explicit capacity failure.
     func updateEstimate(appID: String, bytes: Int?, identity: String) {

@@ -5,7 +5,10 @@ import SwiftUI
 @MainActor final class APKSession: ObservableObject {
     static let shared = APKSession()
     @Published private(set) var closing = false
+    @Published private(set) var stoppingAPK: String?
     @Published private(set) var revision = 0
+    private var retry: Task<Void, Never>?
+    private var normallyClosed = false
 
     func close(_ app: TLApp) async -> Bool {
         guard !closing, let apk = app.apks.first,
@@ -13,13 +16,29 @@ import SwiftUI
         closing = true
         defer { closing = false }
         let previousState = husk_unity_state()
+        if stoppingAPK != apk {
+            normallyClosed = previousState == Int32(HUSK_UNITY_RUNNING) || previousState == Int32(HUSK_UNITY_ENDED)
+        }
+        stoppingAPK = apk
         CrashReport.observeBudget(state: previousState, frames: husk_unity_frames())
         let stopped = await Task.detached(priority: .userInitiated) { husk_native_close() }.value
-        guard stopped else { return false }
+        guard stopped else {
+            if retry == nil {
+                retry = Task {
+                    while stoppingAPK == apk {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        if await close(app) { break }
+                    }
+                    retry = nil
+                }
+            }
+            return false
+        }
+        stoppingAPK = nil
         TLUnityScreen.discard(apk: apk)
         AppWindows.shared.close(app)
         NotificationCenter.default.post(name: TLUnityUIView.huskStopPlaying, object: nil)
-        CrashReport.gameEnded(normallyClosed: previousState == Int32(HUSK_UNITY_RUNNING) || previousState == Int32(HUSK_UNITY_ENDED))
+        CrashReport.gameEnded(normallyClosed: normallyClosed)
         revision += 1
         HuskLog.log("ui", "APK fully closed; next launch creates a new session: \(app.label)")
         return true
@@ -50,7 +69,29 @@ struct CloseAPKButton: View {
         .alert("The APK is still stopping", isPresented: $failed) {
             Button("OK", role: .cancel) { }
         } message: {
-            Text("A task in the app has not finished yet. Wait a moment and try Fully Close APK again. Husk has kept the session to avoid losing or corrupting its data.")
+            Text("Husk is still releasing this APK's resources and will finish closing it automatically. The app cannot be resumed while it is stopping.")
+        }
+    }
+}
+
+/// A stop request cannot be undone: do not present the retained GPU frame as a live app.
+struct APKStoppingOverlay: View {
+    let app: TLApp
+    let onReturn: () -> Void
+    @ObservedObject private var session = APKSession.shared
+
+    var body: some View {
+        if let apk = app.apks.first, session.stoppingAPK == apk {
+            VStack(spacing: 16) {
+                ProgressView()
+                Text("Closing APK…").font(.headline)
+                Text("Husk is releasing the app's resources. You can return to the library while it finishes.")
+                    .font(.subheadline).multilineTextAlignment(.center)
+                Button("Return to Library", action: onReturn)
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemBackground))
         }
     }
 }

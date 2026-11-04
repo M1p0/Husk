@@ -59,9 +59,15 @@ enum JITBootstrap {
         husk_jit_budget_set_target_bytes(jitBytes)
         let held = husk_jit_budget_region_bytes()
         let continuing = JITMemoryBudget.shared.activeRun?.appID == appID && husk_native_loaded_apk() != nil
-        // Closed Java APKs leave their old code pages in this process. A different app needs room in the unused tail.
+        // Shared Java runtime images survive close and are reused. Only the additional code needs the unused tail;
+        // APK-specific images from previous sessions still count as occupied and receive no reuse credit.
         let used = continuing ? 0 : tl_xmem_used()
-        return held == 0 || (used <= held && required <= held - used)
+        let additional = continuing ? required : JITMemoryBudget.shared.additionalBytes(
+            for: appID, coldBytes: required, sharedBytes: tl_xmem_shared_used())
+        if held > 0 && !continuing {
+            HuskLog.log("jit", "launch budget: cold=\(required) shared=\(tl_xmem_shared_used()) additional=\(additional) used=\(used) capacity=\(held)")
+        }
+        return held == 0 || (used <= held && additional <= held - used)
     }
 
     /// True once the region is held. The memory budget needs this: after a

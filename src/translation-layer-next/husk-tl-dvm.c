@@ -1351,8 +1351,6 @@ typedef struct mref {
 
 static mref *resolve_mref(dvm_dex *d, uint32_t idx, bool is_static)
 {
-    static _Thread_local mref *last;
-    (void)last;
     mref *r = (mref *)__atomic_load_n(&d->mcache[idx], __ATOMIC_ACQUIRE);
     if (r) return r;
     r = calloc(1, sizeof(*r));
@@ -2203,6 +2201,7 @@ static uint32_t hook_slots(tl_jclass *jc) { dvm_class *c = dvm_class_of(jc); ret
 static const tl_dvm_hooks k_hooks = { hook_attach, hook_find_method, hook_invoke, hook_find_field, hook_slots, dvm_out_of_memory };
 
 static bool g_running;
+static bool g_session_ready;
 
 static void reattach(tl_jclass *jc)
 {
@@ -2299,7 +2298,19 @@ static bool forget_app_class(tl_jclass *jc, void *user)
 {
     (void)user;
     dvm_class *c = dvm_class_of(jc);
-    return c && c->dex && !boot_dex(c->dex);
+    if (!c) return false;
+    if (c->dex) return !boot_dex(c->dex);
+    /* Generated Proxy classes hold the app's interface methods despite having no DEX of their own. */
+    if (!c->prim && !c->elem) return true;
+    const char *name = jc->name;
+    while (*name == '[') name++;
+    if (*name == 'L') {
+        char component[1024]; snprintf(component, sizeof(component), "%s", name + 1);
+        char *end = strchr(component, ';'); if (end) *end = 0;
+        cdef *definition = cdef_find(component);
+        return definition && !boot_dex(definition->dex);
+    }
+    return false;
 }
 void tl_dvm_drop_app(void)
 {
@@ -2332,6 +2343,45 @@ void tl_dvm_drop_app(void)
     g_nopened = w;
     pthread_mutex_unlock(&g_open_lock);
     tl_log_line("dvm: the app's classes are dropped; the boot path stays");
+}
+
+static void reset_boot_state(tl_jclass *jc)
+{
+    /* Class mirrors also carry mutable reflection/class-loader caches. Keep their JNI identity,
+     * but lazily fill their Java fields again from the retained, immutable class metadata. */
+    if (jc->mirror) { free(jc->mirror->fields); jc->mirror->fields = NULL; jc->mirror->nfields = 0; }
+    dvm_class *c = dvm_class_of(jc);
+    if (!c || !c->dex || !boot_dex(c->dex)) return;
+    if (jc->statics) memset(jc->statics, 0, (size_t)jc->nstatics * sizeof(jvalue));
+    uint32_t values = rd32(c->dex->b + c->dex->cls_off + 32 * c->def + 28);
+    if (values) {
+        const uint8_t *p = c->dex->b + values;
+        uint32_t n = uleb(&p);
+        for (uint32_t i = 0; i < n && (int)i < c->nsf; i++) read_value(c->dex, &p, &jc->statics[i]);
+    }
+    for (int i = 0; i < jc->nfields; i++) if (jc->fields[i]->detached) memset(&jc->fields[i]->dval, 0, sizeof(jvalue));
+    memset(&c->init_thread, 0, sizeof(c->init_thread));
+    atomic_store(&c->state, CS_LINKED);
+}
+
+void dvm_natives_reset_session(void);
+bool tl_dvm_end_session(void)
+{
+    if (!tl_session_stopping() || !tl_session_drained()) return false;
+    void tl_audio_reset_session(void), tl_media_reset_session(void), tl_sqlite_reset_session(void);
+    tl_audio_reset_session(); tl_media_reset_session(); tl_sqlite_reset_session();
+    tl_dvm_drop_app();
+    /* No Java teardown code: canceled execution may have left Java locks or executor bookkeeping unusable.
+     * Restore encoded defaults for every linked framework/core class, then run <clinit> normally on next use. */
+    tl_session_allow_cleanup(true);
+    tl_jni_each_declared(reset_boot_state);
+    dvm_natives_reset_session();
+    tl_jni_clear();
+    g_oom_error = NULL;
+    g_session_ready = false;
+    tl_session_allow_cleanup(false);
+    tl_log_line("dvm: Java session discarded; all core/framework class initializers will run again");
+    return true;
 }
 
 static jobj *dex_cookie(int first, int count)
@@ -2537,16 +2587,29 @@ bool tl_dvm_load_natives(const char *libdir)
     /* core-icu4j's natives (charset converters, ICU's Java side), which ART loads with the runtime */
     if (!tl_jni_load_library("libicu_jni.so")) tl_log_line("dvm: libicu_jni.so did not load");
     if (tl_jni_pending()) { char b[300]; tl_log_line("dvm: loading libcore's natives threw %s", tl_dvm_describe_pending(b, sizeof(b)) ? b : "?"); tl_jni_clear(); }
+    return tl_dvm_initialize_session() && ok;
+}
+
+bool tl_dvm_initialize_session(void)
+{
+    if (!g_running) return false;
+    if (g_session_ready) return true;
+    tl_jni_clear();
     /* What ART initialises as it starts, before any app code: the core classes, in an order where each one's <clinit> finds what
      * it needs (System's pulls in most of java.lang and java.util.concurrent). */
     static const char *const order[] = { "java/lang/Object", "java/lang/Class", "java/lang/String", "java/lang/System",
                                          "java/lang/ThreadGroup", "java/lang/Thread", NULL };
     for (int i = 0; order[i]; i++) {
         dvm_class *c = dvm_class_of(dvm_class_named(order[i]));
-        if (c && !dvm_ensure_init(c)) { char b[400]; tl_log_line("dvm: initialising %s threw %s", order[i], tl_dvm_describe_pending(b, sizeof(b)) ? b : "?"); tl_jni_clear(); }
+        if (c && !dvm_ensure_init(c)) { char b[400]; tl_log_line("dvm: initialising %s threw %s", order[i], tl_dvm_describe_pending(b, sizeof(b)) ? b : "?"); tl_jni_clear(); return false; }
     }
     dvm_current_thread();
-    return ok;
+    dvm_throw("java/lang/OutOfMemoryError", "Java allocation failed");
+    g_oom_error = tl_jni_pending_object();
+    tl_jni_clear();
+    g_session_ready = true;
+    tl_log_line("dvm: fresh Java core initialized for APK session");
+    return true;
 }
 
 bool tl_dvm_call_static(const char *cls, const char *name, const char *sig, const jvalue *args, jvalue *ret)

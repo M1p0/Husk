@@ -1175,6 +1175,7 @@ static void *app_main(void *arg) { app_main_body(arg); atomic_store(&A.app_done,
 bool tl_javaapp_start(const tl_javaapp_config *cfg)
 {
     if (!tl_session_restart()) return false;
+    if (!tl_dvm_initialize_session()) return false;
     atomic_store(&A.app_done, false); atomic_store(&A.gl_done, false);
     atomic_store(&A.ended, false);
     atomic_store(&A.paused, false);
@@ -1240,7 +1241,9 @@ bool tl_javaapp_stop(void)
         usleep(10000);
     }
     if ((A.app_started && !atomic_load(&A.app_done)) || (A.gl_thread_started && !atomic_load(&A.gl_done)) || !tl_session_drained()) {
-        tl_log_line("javaapp: stop pending: waiting for app threads; the session is retained");
+        unsigned calls, workers; tl_session_counts(&calls, &workers);
+        tl_log_line("javaapp: stop pending: main=%d GL=%d calls=%u workers=%u; the session is retained",
+                    A.app_started && !atomic_load(&A.app_done), A.gl_thread_started && !atomic_load(&A.gl_done), calls, workers);
         return false;
     }
     if (A.app_started) { pthread_join(A.app_thread, NULL); A.app_started = false; }
@@ -1248,11 +1251,7 @@ bool tl_javaapp_stop(void)
     A.gl_started = false;
     A.gl_view = NULL; A.gl_renderer = NULL; A.content = NULL;
     pthread_mutex_lock(&A.q_lock); A.qn = 0; pthread_mutex_unlock(&A.q_lock);
-    tl_session_allow_cleanup(true);
-    jvalue r;
-    if (tl_dvm_defines_class("husk/AppRunner")) tl_dvm_call_static("husk/AppRunner", "resetSession", "()V", NULL, &r);
-    tl_session_allow_cleanup(false);
-    if (tl_jni_pending()) { tl_log_line("javaapp: framework reset failed; session retained"); tl_jni_clear(); return false; }
+    tl_web_reset_session();
     pthread_mutex_lock(&A.t_lock);
     for (int i = 0; i < A.ntext; i++) free(A.text[i]);
     A.ntext = 0;

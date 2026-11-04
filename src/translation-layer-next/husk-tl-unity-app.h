@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-enum { HUSK_UNITY_IDLE = 0, HUSK_UNITY_STARTING = 1, HUSK_UNITY_RUNNING = 2, HUSK_UNITY_FAILED = 3, HUSK_UNITY_ENDED = 4 };
+enum { HUSK_UNITY_IDLE = 0, HUSK_UNITY_STARTING = 1, HUSK_UNITY_RUNNING = 2, HUSK_UNITY_FAILED = 3, HUSK_UNITY_ENDED = 4, HUSK_UNITY_STOPPING = 5 };
 
 /*
  * Start the game in `apk`. `metal_layer` is the CAMetalLayer it draws into, `width`/`height` its

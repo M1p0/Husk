@@ -188,8 +188,11 @@ static void *heartbeat_thread(void *arg)
               tl_log_line("unity: a variadic shim's implementation (%s) changed callee-saved registers (%llu times; x21 then %#llx, diff mask %#llx)",
                           nm, (unsigned long long)seen, (unsigned long long)tl_va_clobber.x21, (unsigned long long)tl_va_clobber.mask);
           } }
-        if ((A.engine == ENGINE_COCOS && tl_cocos_ended()) || (A.engine == ENGINE_GODOT && tl_godot_ended()) || (A.engine == ENGINE_GAMEMAKER && tl_gm_ended()) || (A.engine == ENGINE_JAVA && tl_javaapp_ended())) atomic_store(&A.state, HUSK_UNITY_ENDED);
-        { int st = atomic_load(&A.state); if (st == HUSK_UNITY_ENDED || st == HUSK_UNITY_FAILED || st == HUSK_UNITY_IDLE) return NULL; }
+        if ((A.engine == ENGINE_COCOS && tl_cocos_ended()) || (A.engine == ENGINE_GODOT && tl_godot_ended()) || (A.engine == ENGINE_GAMEMAKER && tl_gm_ended()) || (A.engine == ENGINE_JAVA && tl_javaapp_ended())) {
+            int running = HUSK_UNITY_RUNNING;
+            atomic_compare_exchange_strong(&A.state, &running, HUSK_UNITY_ENDED);
+        }
+        { int st = atomic_load(&A.state); if (st == HUSK_UNITY_ENDED || st == HUSK_UNITY_FAILED || st == HUSK_UNITY_IDLE || st == HUSK_UNITY_STOPPING) return NULL; }
     }
 }
 
@@ -255,7 +258,7 @@ static bool manifest_launcher_activity(const char *apk, const char *package, cha
 static void *java_boot(void *arg)
 {
     bool *ok = arg;
-    if (tl_dvm_running()) { *ok = true; return NULL; }
+    if (tl_dvm_running()) { *ok = tl_dvm_initialize_session(); return NULL; }
     const char *r = g_java_root;
     static char paths[20][1200];
     const char *boot[20];
@@ -434,11 +437,15 @@ void husk_native_unload(void)
     st = atomic_load(&A.state);
     if (st == HUSK_UNITY_IDLE) return;
     husk_unity_set_paused(true);
+    if (A.engine == ENGINE_JAVA) atomic_store(&A.state, HUSK_UNITY_STOPPING);
     if (A.engine == ENGINE_JAVA && !tl_javaapp_stop()) return;
     else if (A.engine == ENGINE_COCOS) tl_cocos_stop();
     else if (A.engine == ENGINE_GODOT) tl_godot_stop();
     else if (A.engine == ENGINE_UNITY) tl_unity_stop();
-    if (tl_dvm_running()) tl_dvm_drop_app();
+    if (tl_dvm_running()) {
+        if (A.engine == ENGINE_JAVA) { if (!tl_dvm_end_session()) return; }
+        else tl_dvm_drop_app();
+    }
     tl_ld_reset_session();
     atomic_fetch_add(&session_generation, 1);
     A.nextra = 0;
@@ -692,7 +699,10 @@ const char *husk_native_loaded_apk(void)
 
 int husk_unity_state(void)
 {
-    if (atomic_load(&A.state) == HUSK_UNITY_RUNNING && ((A.engine == ENGINE_COCOS && tl_cocos_ended()) || (A.engine == ENGINE_GODOT && tl_godot_ended()) || (A.engine == ENGINE_GAMEMAKER && tl_gm_ended()) || (A.engine == ENGINE_JAVA && tl_javaapp_ended()))) atomic_store(&A.state, HUSK_UNITY_ENDED);
+    if (atomic_load(&A.state) == HUSK_UNITY_RUNNING && ((A.engine == ENGINE_COCOS && tl_cocos_ended()) || (A.engine == ENGINE_GODOT && tl_godot_ended()) || (A.engine == ENGINE_GAMEMAKER && tl_gm_ended()) || (A.engine == ENGINE_JAVA && tl_javaapp_ended()))) {
+        int running = HUSK_UNITY_RUNNING;
+        atomic_compare_exchange_strong(&A.state, &running, HUSK_UNITY_ENDED);
+    }
     return atomic_load(&A.state);
 }
 static unsigned long engine_frames(void)

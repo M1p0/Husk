@@ -31,6 +31,7 @@
 #include "husk-tl-dvm-javaapp.h"
 #include "husk-tl-jni.h"
 #include "husk-tl-ld.h"
+#include "husk-tl-xmem.h"
 
 void tl_log_line(const char *fmt, ...)
 {
@@ -294,8 +295,10 @@ static void *run(void *p)
     fprintf(stderr, "javaapp: %lu frames in %d s\n", tl_javaapp_frames(), secs);
     if (cycles > 1) {
         if (!tl_javaapp_stop()) { fprintf(stderr, "javaapp: cycle %d failed to stop\n", cycle + 1); _exit(2); }
-        tl_dvm_drop_app(); tl_ld_reset_session();
+        if (!tl_dvm_end_session()) { fprintf(stderr, "javaapp: failed to discard runtime state\n"); _exit(3); }
+        tl_ld_reset_session();
         fprintf(stderr, "javaapp: cycle %d stopped; PID %d stays alive\n", cycle + 1, getpid());
+        fprintf(stderr, "javaapp: retained code: used=%zu shared=%zu capacity=%zu\n", tl_xmem_used(), tl_xmem_shared_used(), tl_xmem_size());
     }
     }
     fflush(stderr);

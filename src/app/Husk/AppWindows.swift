@@ -155,6 +155,7 @@ private struct AppWindow: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: TLUnityUIView.appClosedItself)) { _ in windows.close() }
         .overlay { if let d = stoppedWhy { AppStoppedOverlay(app: app, diagnosis: d) { windows.close() } } }
+        .overlay { APKStoppingOverlay(app: app) { windows.close() } }
         .onReceive(NotificationCenter.default.publisher(for: WebAppRuntime.closed)) { n in
             if (n.object as? String) == app.id { windows.close() }
         }

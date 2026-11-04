@@ -42,6 +42,13 @@ int main(int argc, char **argv)
     assert(!tl_xmem_alloc(4 * TL_XMEM_PAGE, NULL, NULL));
     assert(access(path, F_OK) != 0);
     assert(!tl_xmem_alloc(SIZE_MAX, NULL, NULL));
-    puts("PASS: real code-region exhaustion writes durable evidence; absent JIT and disabled watches do not");
+    assert(tl_xmem_shared_used() == 0);
+    assert(tl_xmem_alloc_shared(TL_XMEM_PAGE, NULL, NULL));
+    assert(tl_xmem_shared_used() == TL_XMEM_PAGE);
+    assert(tl_xmem_alloc(TL_XMEM_PAGE, NULL, NULL));
+    assert(tl_xmem_used() == 3 * TL_XMEM_PAGE && tl_xmem_shared_used() == TL_XMEM_PAGE);
+    assert(!tl_xmem_alloc_shared(4 * TL_XMEM_PAGE, NULL, NULL));
+    assert(tl_xmem_shared_used() == TL_XMEM_PAGE);
+    puts("PASS: durable exhaustion evidence and separate shared/runtime allocation accounting");
     return 0;
 }

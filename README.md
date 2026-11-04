@@ -26,11 +26,28 @@ Add an APK, tap it, and it opens full-screen.
 This checkout adds **Fully Close APK** for Java apps such as PicACG, in the running
 app's toolbar, floating window and library detail page. It ends the app session
 while keeping Husk open. The next launch creates a fresh app and screen; saved
-files stay in place. **Pause and Return** keeps the existing resume behavior.
-If a native task cannot finish, close reports that it is still stopping and keeps
-its live memory for a retry. Other native game engines do not yet offer this action.
+files stay in place. Closing discards all initialized Java state, including core
+and framework statics, class reflection caches, main loopers and frame schedulers.
+The next launch reruns class initializers, core bootstrap, Application creation
+and the launcher Activity. Linked boot metadata, native bindings and the granted
+JIT memory remain available. **Pause and Return** keeps the existing resume behavior.
+Closing interrupts blocked socket reads, polling and host HTTP requests. If a
+native task still cannot finish, Husk shows a stopping screen and retries cleanup
+automatically; the retained screen cannot be resumed. Other native game engines
+do not yet offer this action.
+WebKit completion handlers are canceled before their owners disappear, queued
+UI work from the old session is discarded, and abandoned SQLite connections,
+audio and decoder resources are released after the app's threads have exited.
+Reopening accounts for the Java runtime code already resident in the JIT region,
+so its cold-start memory budget is not charged a second time after closing.
 
 Shutdown gate regression: `sh tests/translation-layer/run_session.sh`.
+Guest network/HTTP shutdown regression (macOS):
+`sh tests/translation-layer/run_session_io.sh`.
+Full Java bootstrap and real frame-callback reopening regression (macOS):
+`sh tests/translation-layer/run_reopen_boot.sh`.
+WebKit pending-completion/session isolation regression (macOS):
+`sh tests/translation-layer/run_web_session.sh`.
 The Mac Java-app harness also accepts `TL_CYCLES=3` to exercise repeated starts
 and stops within one process (using its existing runtime and ANGLE settings).
 

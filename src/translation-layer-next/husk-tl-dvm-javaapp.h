@@ -58,5 +58,7 @@ unsigned long tl_javaapp_frames(void);
 bool tl_javaapp_ended(void);
 /* End the current Java app: the looper returns, the GL thread joins. Call before loading another. */
 bool tl_javaapp_stop(void);
+/* Main-thread WebKit teardown, including completion handlers awaiting Java replies. */
+void tl_web_reset_session(void);
 
 #endif

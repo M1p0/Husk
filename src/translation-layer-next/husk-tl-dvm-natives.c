@@ -26,6 +26,7 @@ static jvalue Z(bool v) { jvalue r; r.j = v ? 1 : 0; return r; }
 static jvalue L(void *p) { jvalue r; r.j = 0; r.l = p; return r; }
 static jvalue F(float f) { jvalue r; r.j = 0; r.f = f; return r; }
 static jvalue D(double d) { jvalue r; r.d = d; return r; }
+static jobj *g_vm_runtime;
 #define NAT(fn) static bool fn(jobj *self, const jvalue *a, jvalue *ret)
 #define UNUSED (void)self; (void)a; (void)ret
 
@@ -547,14 +548,13 @@ NAT(VMR_properties)
 NAT(VMR_getRuntime)
 {
     UNUSED;
-    static jobj *rt;
-    if (!rt) {
+    if (!g_vm_runtime) {
         tl_jclass *jc = dvm_class_named("dalvik/system/VMRuntime");
         if (!jc) { *ret = L(NULL); return true; }
-        rt = dvm_new_object(jc);
-        rt->refs = 1u << 30;
+        g_vm_runtime = dvm_new_object(jc);
+        g_vm_runtime->refs = 1u << 30;
     }
-    *ret = L(rt);
+    *ret = L(g_vm_runtime);
     return true;
 }
 NAT(VMR_zero) { UNUSED; ret->j = 0; return true; }
@@ -596,10 +596,23 @@ NAT(VMR_classPath) { UNUSED; *ret = L(dvm_new_string_utf8("")); return true; }
 /* ================================================================== Thread */
 
 static _Thread_local jobj *t_thread;
+static atomic_ulong g_thread_epoch;
+static _Thread_local unsigned long t_thread_epoch;
+
+void dvm_natives_reset_session(void)
+{
+    atomic_fetch_add(&g_thread_epoch, 1);
+    g_vm_runtime = NULL;
+    pthread_mutex_lock(&g_intern_lock);
+    free(g_interned); g_interned = NULL; g_icap = 0; g_icount = 0;
+    pthread_mutex_unlock(&g_intern_lock);
+}
 static pthread_mutex_t g_tid_lock = PTHREAD_MUTEX_INITIALIZER;
 
 jobj *dvm_current_thread(void)
 {
+    unsigned long epoch = atomic_load(&g_thread_epoch);
+    if (t_thread_epoch != epoch) { t_thread = NULL; t_thread_epoch = epoch; }
     if (t_thread) return t_thread;
     /* A thread Java has not seen (the main thread, a native thread calling in): a Thread for it, in the main group, as ART
      * makes when it attaches one. */
@@ -746,6 +759,7 @@ static void *thread_main(void *p)
     void tl_thread_altstack(void); tl_thread_altstack();
     start_arg *s = p;
     t_thread = s->thread;
+    t_thread_epoch = g_thread_epoch;
     free(s);
     jobj *t = t_thread;
     jvalue nm; dvm_class *c = dvm_class_of(dvm_object_class(t));

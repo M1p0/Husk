@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "husk-tl-http.h"
+#include "husk-tl-session.h"
 
 /* Answering a redirect with nil makes the task finish with the 3xx response itself. */
 @interface TLHttpNoRedirect : NSObject <NSURLSessionTaskDelegate>
@@ -59,7 +60,9 @@ static bool perform_once(const tl_http_request *req, tl_http_response *out)
             dispatch_semaphore_signal(done);
         }];
         [task resume];
-        dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+        while (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC))) {
+            if (tl_session_stopping()) [task cancel];
+        }
 
         if (err || ![resp isKindOfClass:[NSHTTPURLResponse class]]) {
             NSInteger code = err.code;

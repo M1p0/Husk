@@ -171,6 +171,29 @@ import Foundation
         _ = protected.begin(appID: "game", capacityBytes: 64 * mib)
         protected.recordUsage(bytes: 6 * mib, madeProgress: true)
         assert(protected.calibrateOnExit(bytes: 6 * mib, successful: true) == 64)
-        print("PASS: JIT estimates, fallback precedence/validation, exit calibration, APK updates, crash recovery and lifecycle")
+        // The phone held 16 MiB, with 10,895,360 bytes of reusable Java runtime code after fully closing PicACG.
+        // Its cold measured 16 MiB budget must not be charged again to the remaining 5.6 MiB.
+        let reopen = budget("reopen-java")
+        let usedAfterClose = 10_895_360
+        let resident = 10_747_904
+        reopen.updateEstimate(appID: "pica", bytes: 2 * mib, identity: "pica-v1")
+        _ = reopen.begin(appID: "pica", capacityBytes: 16 * mib)
+        reopen.recordUsage(bytes: usedAfterClose, madeProgress: true)
+        assert(reopen.calibrateOnExit(bytes: usedAfterClose, successful: true) == 16)
+        reopen.end()
+        for _ in 0..<3 {
+            let cold = reopen.megabytes(for: "pica") * mib
+            assert(cold > 16 * mib - usedAfterClose) // The old gate wrongly demanded a Husk restart.
+            assert(reopen.additionalBytes(for: "pica", coldBytes: cold, sharedBytes: resident) <= 16 * mib - usedAfterClose)
+            _ = reopen.begin(appID: "pica", capacityBytes: 16 * mib, initialUsedBytes: usedAfterClose)
+            reopen.recordUsage(bytes: usedAfterClose + 147456, madeProgress: true)
+            assert(reopen.calibrateOnExit(bytes: usedAfterClose + 147456, successful: true) == 16)
+            reopen.end()
+        }
+        reopen.updateEstimate(appID: "native", bytes: 8 * mib, identity: "native-v1")
+        assert(reopen.additionalBytes(for: "native", coldBytes: 8 * mib, sharedBytes: resident) == 8 * mib)
+        assert(reopen.additionalBytes(for: "unknown", coldBytes: 16 * mib, sharedBytes: resident) == 16 * mib)
+        assert(reopen.additionalBytes(for: "pica", coldBytes: 16 * mib, sharedBytes: 0) == 16 * mib)
+        print("PASS: JIT estimates, fallback precedence, exit calibration, repeated Java reopen and native/unknown app limits")
     }
 }
