@@ -11,6 +11,7 @@
 #include "husk-tl-dvm-gl.h"
 #include "husk-tl-aosp.h"
 #include "husk-tl-dvm.h"
+#include "husk-tl-session.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <fcntl.h>
@@ -37,7 +38,7 @@ static struct {
     pthread_mutex_t q_lock;
     int32_t q[4096]; int qn;                    /* packed input events: phase, id, x bits, y bits */
     atomic_ulong frames;
-    atomic_bool ended, paused, render_requested;
+    atomic_bool ended, paused, render_requested, app_done, gl_done;
     jobj *gl_view, *gl_renderer;
     int gl_version;
     pthread_t gl_thread, app_thread;
@@ -464,7 +465,7 @@ NAT(N_insets)
     return true;
 }
 
-static void *gl_main(void *arg);
+static void *gl_main_body(void *arg);
 NAT(N_startGL)
 {
     void tl_thread_altstack(void); tl_thread_altstack();
@@ -896,7 +897,7 @@ static bool app_frame_on(void) { pthread_mutex_lock(&E2.lk); bool q = E2.on; pth
  * The render thread: one EGL surface on the app's screen, and on it, each frame, what the app's GLSurfaceView renderer draws (in
  * the app's own context) with the window's views over it (in Husk's). An app without GL still gets this thread for its views.
  */
-static void *gl_main(void *arg)
+static void *gl_main_body(void *arg)
 {
     (void)arg;
     pthread_setname_np("GLThread");
@@ -1018,6 +1019,11 @@ static void *gl_main(void *arg)
         if (late > 100000000ll) next = now_ns();
         else if (late < 0) { struct timespec ts = { 0, (long)(-late) }; nanosleep(&ts, NULL); }
     }
+    makeCurrent(dpy, NULL, NULL, NULL);
+    unsigned (*destroySurface)(EGLDisplay, EGLSurface) = tl_egl_resolve("eglDestroySurface");
+    unsigned (*destroyContext)(EGLDisplay, EGLContext) = tl_egl_resolve("eglDestroyContext");
+    if (destroySurface) destroySurface(dpy, surf);
+    if (destroyContext) { if (app) destroyContext(dpy, app); destroyContext(dpy, ui); }
     return NULL;
 }
 
@@ -1123,7 +1129,7 @@ static void log_pending_stack(void)
     }
 }
 
-static void *app_main(void *arg)
+static void *app_main_body(void *arg)
 {
     void tl_thread_altstack(void); tl_thread_altstack();
     (void)arg;
@@ -1141,7 +1147,7 @@ static void *app_main(void *arg)
     } else {
         tl_log_line("javaapp: no AppRunner and no ActivityThread on the boot path");
     }
-    if (!ok) {
+    if (!ok && !tl_session_stopping()) {
         char buf[800];
         tl_log_line("javaapp: the app's main thread ended with %s", tl_dvm_describe_pending(buf, sizeof(buf)) ? buf : "?");
         log_pending_stack();
@@ -1160,8 +1166,13 @@ static void stub_lib(const char *name, uint64_t size, void *dir)
     if (stat(p, &st) != 0) { int fd = open(p, O_CREAT | O_WRONLY, 0755); if (fd >= 0) close(fd); }
 }
 
+static void *gl_main(void *arg) { gl_main_body(arg); atomic_store(&A.gl_done, true); return NULL; }
+static void *app_main(void *arg) { app_main_body(arg); atomic_store(&A.app_done, true); return NULL; }
+
 bool tl_javaapp_start(const tl_javaapp_config *cfg)
 {
+    if (!tl_session_restart()) return false;
+    atomic_store(&A.app_done, false); atomic_store(&A.gl_done, false);
     atomic_store(&A.ended, false);
     atomic_store(&A.paused, false);
     atomic_store(&A.frames, 0);
@@ -1216,19 +1227,40 @@ bool tl_javaapp_start(const tl_javaapp_config *cfg)
     return A.app_started;
 }
 
-void tl_javaapp_stop(void)
+bool tl_javaapp_stop(void)
 {
+    tl_session_request_stop();
     atomic_store(&A.ended, true);
+    // A native call may be stuck. Keep its DEX alive and report failure instead of hanging Husk or freeing live memory.
+    for (int i = 0; i < 300; i++) {
+        if ((!A.app_started || atomic_load(&A.app_done)) && (!A.gl_thread_started || atomic_load(&A.gl_done)) && tl_session_drained()) break;
+        usleep(10000);
+    }
+    if ((A.app_started && !atomic_load(&A.app_done)) || (A.gl_thread_started && !atomic_load(&A.gl_done)) || !tl_session_drained()) {
+        tl_log_line("javaapp: stop pending: waiting for app threads; the session is retained");
+        return false;
+    }
     if (A.app_started) { pthread_join(A.app_thread, NULL); A.app_started = false; }
     if (A.gl_thread_started) { pthread_join(A.gl_thread, NULL); A.gl_thread_started = false; }
     A.gl_started = false;
     A.gl_view = NULL; A.gl_renderer = NULL; A.content = NULL;
     pthread_mutex_lock(&A.q_lock); A.qn = 0; pthread_mutex_unlock(&A.q_lock);
+    tl_session_allow_cleanup(true);
     jvalue r;
     if (tl_dvm_defines_class("husk/AppRunner")) tl_dvm_call_static("husk/AppRunner", "resetSession", "()V", NULL, &r);
-    atomic_store(&A.ended, false);
-    atomic_store(&A.paused, false);
+    tl_session_allow_cleanup(false);
+    if (tl_jni_pending()) { tl_log_line("javaapp: framework reset failed; session retained"); tl_jni_clear(); return false; }
+    pthread_mutex_lock(&A.t_lock);
+    for (int i = 0; i < A.ntext; i++) free(A.text[i]);
+    A.ntext = 0;
+    pthread_mutex_unlock(&A.t_lock);
+    pthread_mutex_lock(&E2.lk);
+    E2.ready = false; E2.on = false; E2.tex = 0; E2.seq++;
+    free(E2.px); E2.px = NULL; E2.pw = E2.ph = 0;
+    pthread_mutex_unlock(&E2.lk);
+    void tl_ui_reset_frame(void); tl_ui_reset_frame();
     atomic_store(&A.frames, 0);
+    return true;
 }
 
 void tl_javaapp_touch(int phase, int id, float x, float y)

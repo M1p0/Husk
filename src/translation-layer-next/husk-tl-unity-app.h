@@ -164,6 +164,9 @@ void husk_gamepad_update(int slot, unsigned buttons, float lx, float ly, float r
 const char *husk_native_loaded_apk(void);
 /* Stop the current app and forget its libraries. User-facing Play does not switch games this way. */
 void husk_native_unload(void);
+/* In-process close for Java apps; false retains the session for a retry. */
+bool husk_native_can_close(void);
+bool husk_native_close(void);
 
 /* Whether the running game has no touch controls of its own and wants the on-screen controller (a PC game through DXVK). */
 bool husk_native_wants_controller(void);

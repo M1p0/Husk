@@ -26,6 +26,7 @@
 #include "husk-tl-godot.h"
 #include "husk-tl-unity.h"
 #include "husk-tl-audio.h"
+#include "husk-tl-session.h"
 #include "husk-tl-geode.h"
 
 /* Geode for the next cocos2d-x launch: its release zip and its launcher's APK (husk-tl-geode.c). Empty: off. */
@@ -64,6 +65,7 @@ static struct {
 } g_java_host;
 
 static unsigned long engine_frames(void);
+static atomic_ulong session_generation;
 
 static struct {
     atomic_int state;
@@ -164,11 +166,12 @@ static void guest_exit(int status)
  * leaves nothing else to tell a frozen game from a killed one, or a jetsam kill from a crash. */
 static void *heartbeat_thread(void *arg)
 {
-    (void)arg;
+    unsigned long generation = (unsigned long)(uintptr_t)arg;
     pthread_setname_np("husk-unity-hb");
     unsigned long last = 0;
     for (int tick = 0;; tick++) {
         if (tick < 40) usleep(500000); else sleep(3);          /* twice a second for the first twenty seconds */
+        if (generation != atomic_load(&session_generation)) return NULL;
         unsigned long f = engine_frames();
 #if TARGET_OS_IPHONE
         tl_log_line("unity: alive: %lu frames (+%lu), %zu MiB left before jetsam", f, f - last, os_proc_available_memory() >> 20);
@@ -412,13 +415,14 @@ static void *launch_thread(void *arg)
     }
     atomic_store(&A.state, HUSK_UNITY_RUNNING);
     pthread_t hb;
-    if (pthread_create(&hb, NULL, heartbeat_thread, NULL) == 0) pthread_detach(hb);
+    if (pthread_create(&hb, NULL, heartbeat_thread, (void *)(uintptr_t)atomic_load(&session_generation)) == 0) pthread_detach(hb);
     /*
      * This thread loaded the game's libraries and ran their JNI_OnLoad, which on Android is the UI thread, and that thread
      * never ends. Some code relies on it: Geode 5 takes this thread as the game's main thread and keeps thread-local state
      * on it, and ending the thread ran that state's cleanup, which freed what was not its to free and took Husk down
      * (Geometry Dash 2.2081, a SIGTRAP from libmalloc right after the sound started). So it stays, asleep.
      */
+    if (A.engine == ENGINE_JAVA) return NULL;
     for (;;) pause();
 }
 
@@ -430,16 +434,31 @@ void husk_native_unload(void)
     st = atomic_load(&A.state);
     if (st == HUSK_UNITY_IDLE) return;
     husk_unity_set_paused(true);
-    if (A.engine == ENGINE_JAVA) tl_javaapp_stop();
+    if (A.engine == ENGINE_JAVA && !tl_javaapp_stop()) return;
     else if (A.engine == ENGINE_COCOS) tl_cocos_stop();
     else if (A.engine == ENGINE_GODOT) tl_godot_stop();
     else if (A.engine == ENGINE_UNITY) tl_unity_stop();
     if (tl_dvm_running()) tl_dvm_drop_app();
     tl_ld_reset_session();
+    atomic_fetch_add(&session_generation, 1);
     A.nextra = 0;
     A.apk[0] = 0;
     atomic_store(&A.state, HUSK_UNITY_IDLE);
     tl_log_line("native: session cleared; another app can start");
+}
+
+bool husk_native_can_close(void)
+{
+    return A.engine == ENGINE_JAVA && atomic_load(&A.state) != HUSK_UNITY_IDLE;
+}
+bool husk_native_close(void)
+{
+    if (!husk_native_can_close()) return false;
+    // Do not race initialization or pretend a hung launch was stopped.
+    for (int i = 0; i < 300 && atomic_load(&A.state) == HUSK_UNITY_STARTING; i++) usleep(10000);
+    if (atomic_load(&A.state) == HUSK_UNITY_STARTING) return false;
+    husk_native_unload();
+    return atomic_load(&A.state) == HUSK_UNITY_IDLE;
 }
 
 static bool launch(int engine, const char *apk, const char *data_dir, void *metal_layer, int width, int height,
@@ -458,6 +477,16 @@ static bool launch(int engine, const char *apk, const char *data_dir, void *meta
         husk_native_unload();
     }
     if (!atomic_compare_exchange_strong(&A.state, &expected, HUSK_UNITY_STARTING)) return false;
+    if (!tl_session_restart()) { atomic_store(&A.state, HUSK_UNITY_FAILED); return false; }
+    if (engine == ENGINE_JAVA) {
+        // JIT bootstrap reserves a 4 GiB pointer-compression cage for Dart/V8.
+        // Java does not consume it: keeping it fills the small address window
+        // of a free-signed iOS app, denying pthread stacks and even small arrays.
+        // The allocator only releases an unused cage, never a live guest mapping.
+        void husk_release_unused_compressed_heap(void);
+        husk_release_unused_compressed_heap();
+        tl_log_line("javaapp: released unused pointer-compression reservation before launch");
+    }
     A.engine = engine;
     snprintf(A.apk, sizeof(A.apk), "%s", apk);
     snprintf(A.data, sizeof(A.data), "%s", data_dir);

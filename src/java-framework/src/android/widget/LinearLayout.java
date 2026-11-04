@@ -27,18 +27,19 @@ public class LinearLayout extends ViewGroup {
         public LayoutParams(MarginLayoutParams p) { super(p); }
         public LayoutParams(LayoutParams p) { super(p); weight = p.weight; gravity = p.gravity; }
     }
-    private boolean mBaselineAligned = true, mUseLargestChild;
+    private boolean mBaselineAligned = true, mUseLargestChild, mAllowInconsistentMeasurement;
     private int mBaselineAlignedChildIndex = -1, mBaselineChildTop, mOrientation, mGravity = Gravity.START | Gravity.TOP, mTotalLength;
     private float mWeightSum = -1;
     private int[] mMaxAscent, mMaxDescent;
     private Drawable mDivider;
     private int mDividerWidth, mDividerHeight, mShowDividers, mDividerPadding;
 
-    public LinearLayout(Context c) { super(c); }
+    public LinearLayout(Context c) { super(c); mAllowInconsistentMeasurement = c != null && c.getApplicationInfo().targetSdkVersion <= 23; }
     public LinearLayout(Context c, AttributeSet a) { this(c, a, 0); }
     public LinearLayout(Context c, AttributeSet a, int defStyleAttr) { this(c, a, defStyleAttr, 0); }
     public LinearLayout(Context c, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
         super(c, attrs, defStyleAttr, defStyleRes);
+        mAllowInconsistentMeasurement = c != null && c.getApplicationInfo().targetSdkVersion <= 23;
         if (attrs == null && defStyleAttr == 0 && defStyleRes == 0) return;
         TypedArray a = c.obtainStyledAttributes(attrs, husk.S.LinearLayout, defStyleAttr, defStyleRes);
         int o = a.getInt(husk.S.LinearLayout_orientation, -1);
@@ -179,7 +180,7 @@ public class LinearLayout extends ViewGroup {
         int heightSize = Math.max(mTotalLength, getSuggestedMinimumHeight());
         int heightSizeAndState = resolveSizeAndState(heightSize, hs, 0);
         heightSize = heightSizeAndState & MEASURED_SIZE_MASK;
-        int remainingExcess = heightSize - mTotalLength + consumedExcessSpace;
+        int remainingExcess = heightSize - mTotalLength + (mAllowInconsistentMeasurement ? 0 : consumedExcessSpace);
         if (skippedMeasure || (remainingExcess != 0 && totalWeight > 0.0f)) {
             float remainingWeightSum = mWeightSum > 0.0f ? mWeightSum : totalWeight;
             mTotalLength = 0;
@@ -194,7 +195,10 @@ public class LinearLayout extends ViewGroup {
                     remainingWeightSum -= childWeight;
                     int childHeight;
                     if (mUseLargestChild && hm != MeasureSpec.EXACTLY) childHeight = largestChildHeight;
-                    else if (lp.height == 0 && hm == MeasureSpec.EXACTLY) childHeight = share;
+                    // Zero-sized weighted children were temporarily measured as WRAP_CONTENT.
+                    // Their natural size is already in remainingExcess: adding it again
+                    // doubles a dialog's content height under an AT_MOST constraint.
+                    else if (lp.height == 0 && (!mAllowInconsistentMeasurement || hm == MeasureSpec.EXACTLY)) childHeight = share;
                     else childHeight = child.getMeasuredHeight() + share;
                     int chs = MeasureSpec.makeMeasureSpec(Math.max(0, childHeight), MeasureSpec.EXACTLY);
                     int cws = getChildMeasureSpec(ws, getPaddingLeft() + getPaddingRight() + lp.leftMargin + lp.rightMargin, lp.width);
@@ -313,7 +317,7 @@ public class LinearLayout extends ViewGroup {
         int widthSize = Math.max(mTotalLength, getSuggestedMinimumWidth());
         int widthSizeAndState = resolveSizeAndState(widthSize, ws, 0);
         widthSize = widthSizeAndState & MEASURED_SIZE_MASK;
-        int remainingExcess = widthSize - mTotalLength + usedExcessSpace;
+        int remainingExcess = widthSize - mTotalLength + (mAllowInconsistentMeasurement ? 0 : usedExcessSpace);
         if (skippedMeasure || (remainingExcess != 0 && totalWeight > 0.0f)) {
             float remainingWeightSum = mWeightSum > 0.0f ? mWeightSum : totalWeight;
             maxAscent[0] = maxAscent[1] = maxAscent[2] = maxAscent[3] = -1;
@@ -331,7 +335,7 @@ public class LinearLayout extends ViewGroup {
                     remainingWeightSum -= childWeight;
                     int childWidth;
                     if (mUseLargestChild && wm != MeasureSpec.EXACTLY) childWidth = largestChildWidth;
-                    else if (lp.width == 0 && wm == MeasureSpec.EXACTLY) childWidth = share;
+                    else if (lp.width == 0 && (!mAllowInconsistentMeasurement || wm == MeasureSpec.EXACTLY)) childWidth = share;
                     else childWidth = child.getMeasuredWidth() + share;
                     int cws = MeasureSpec.makeMeasureSpec(Math.max(0, childWidth), MeasureSpec.EXACTLY);
                     int chs = getChildMeasureSpec(hs, getPaddingTop() + getPaddingBottom() + lp.topMargin + lp.bottomMargin, lp.height);

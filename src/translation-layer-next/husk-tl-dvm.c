@@ -16,6 +16,8 @@
 #include "husk-tl-internal.h"
 #include "husk-tl-arm32.h"
 #include "husk-tl-ld.h"
+#include "husk-tl-session.h"
+#include <errno.h>
 
 int g_dvm_trace;
 void tl_dvm_set_trace(int level) { g_dvm_trace = level; }
@@ -783,6 +785,21 @@ const char *tl_dvm_describe_pending(char *buf, size_t n)
  * does: a thread that waits inside two synchronized blocks on the same object must not keep it locked) and takes them back. */
 typedef struct mon { pthread_mutex_t mu; pthread_cond_t cv; _Atomic(pthread_t) owner; int count; } mon;
 
+typedef struct held_mon { mon *value; struct held_mon *next; } held_mon;
+static _Thread_local held_mon *held;
+static void remember_monitor(mon *m) { held_mon *h = malloc(sizeof(*h)); h->value = m; h->next = held; held = h; }
+static void forget_monitor(mon *m) {
+    held_mon **p = &held;
+    while (*p) { if ((*p)->value == m) { held_mon *h = *p; *p = h->next; free(h); return; } p = &(*p)->next; }
+}
+static void release_stopped_monitors(void) {
+    while (held) {
+        held_mon *h = held; held = h->next;
+        h->value->count = 0; atomic_store(&h->value->owner, (pthread_t)0);
+        pthread_mutex_unlock(&h->value->mu); free(h);
+    }
+}
+
 static mon *monitor_of(jobj *o)
 {
     mon *m = o->monitor;
@@ -802,7 +819,11 @@ void dvm_monitor_enter(jobj *o)
 {
     mon *m = monitor_of(o);
     if (mon_mine(m)) { m->count++; return; }
-    pthread_mutex_lock(&m->mu);
+    while (pthread_mutex_trylock(&m->mu) != 0) {
+        if (tl_session_stopping()) return;
+        usleep(1000);
+    }
+    remember_monitor(m);
     atomic_store(&m->owner, pthread_self());
     m->count = 1;
 }
@@ -810,7 +831,7 @@ bool dvm_monitor_exit(jobj *o)
 {
     mon *m = monitor_of(o);
     if (!mon_mine(m)) return false;
-    if (--m->count == 0) { atomic_store(&m->owner, (pthread_t)0); pthread_mutex_unlock(&m->mu); }
+    if (--m->count == 0) { forget_monitor(m); atomic_store(&m->owner, (pthread_t)0); pthread_mutex_unlock(&m->mu); }
     return true;
 }
 void dvm_monitor_wait(jobj *o, int64_t ms, int32_t ns);
@@ -821,12 +842,17 @@ void dvm_monitor_wait(jobj *o, int64_t ms, int32_t ns)
     int held = m->count;
     m->count = 0;
     atomic_store(&m->owner, (pthread_t)0);
-    if (ms <= 0 && ns <= 0) pthread_cond_wait(&m->cv, &m->mu);
-    else {
-        struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_sec += ms / 1000; ts.tv_nsec += (ms % 1000) * 1000000 + ns;
-        if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
-        pthread_cond_timedwait(&m->cv, &m->mu, &ts);
+    struct timespec end; clock_gettime(CLOCK_REALTIME, &end);
+    bool forever = ms <= 0 && ns <= 0;
+    end.tv_sec += ms / 1000; end.tv_nsec += (ms % 1000) * 1000000 + ns;
+    if (end.tv_nsec >= 1000000000) { end.tv_sec++; end.tv_nsec -= 1000000000; }
+    while (!tl_session_stopping()) {
+        struct timespec next; clock_gettime(CLOCK_REALTIME, &next);
+        if (!forever && (next.tv_sec > end.tv_sec || (next.tv_sec == end.tv_sec && next.tv_nsec >= end.tv_nsec))) break;
+        next.tv_nsec += 20000000;
+        if (next.tv_nsec >= 1000000000) { next.tv_sec++; next.tv_nsec -= 1000000000; }
+        if (!forever && (next.tv_sec > end.tv_sec || (next.tv_sec == end.tv_sec && next.tv_nsec > end.tv_nsec))) next = end;
+        if (pthread_cond_timedwait(&m->cv, &m->mu, &next) != ETIMEDOUT) break;
     }
     atomic_store(&m->owner, pthread_self());
     m->count = held;
@@ -847,7 +873,7 @@ bool dvm_ensure_init(dvm_class *c)
         bool mine = pthread_equal(c->init_thread, pthread_self());
         pthread_mutex_unlock(&c->init_lock);
         if (mine) return true;
-        while (c->state == CS_INITIALIZING) usleep(200);
+        while (c->state == CS_INITIALIZING) { if (tl_session_stopping()) return false; usleep(200); }
         return c->state == CS_INITIALIZED;
     }
     c->state = CS_INITIALIZING;
@@ -984,7 +1010,24 @@ static bool watch_hit(const char *w, const dvm_method *m)
     return false;
 }
 
+static bool session_call(dvm_method *m, jobj *self, const jvalue *params, jvalue *ret);
 bool dvm_call(dvm_method *m, jobj *self, const jvalue *params, jvalue *ret)
+{
+    static _Thread_local unsigned nesting;
+    ret->j = 0;
+    if (tl_session_stopping()) return false;
+    bool root = nesting == 0;
+    if (root && !tl_session_enter()) return false;
+    nesting++;
+    bool ok = session_call(m, self, params, ret);
+    nesting--;
+    if (root) {
+        if (tl_session_stopping()) release_stopped_monitors();
+        tl_session_leave();
+    }
+    return ok;
+}
+static bool session_call(dvm_method *m, jobj *self, const jvalue *params, jvalue *ret)
 {
     if (t_depth < 8192) { t_frames[t_depth] = m; t_pcs[t_depth] = 0; }
     t_depth++;
@@ -1632,6 +1675,7 @@ static bool interpret(dvm_method *m, uint64_t *regs, jvalue *ret)
     if ((m->flags & 0x20) /* synchronized */) dvm_monitor_enter((m->flags & 8) ? m->cls->jc->mirror : RL(regs, m->regs - m->ins));
 
 dispatch:;
+    if (tl_session_stopping()) goto cancelled;
     uint16_t w = insns[pc];
     switch (w & 0xFF) {
     case 0x00: {                                                   /* nop, and the data payloads (skipped by size) */
@@ -2022,6 +2066,7 @@ dispatch:;
     }
 
 exception: {
+        if (tl_session_stopping()) goto cancelled;
         jobj *e = tl_jni_pending_object();
         if (!e) { dvm_throw("java/lang/InternalError", "exception with nothing pending"); e = tl_jni_pending_object(); }
         uint32_t target;
@@ -2031,6 +2076,11 @@ exception: {
             pc = target;
             goto dispatch;
         }
+        if ((m->flags & 0x20)) dvm_monitor_exit((m->flags & 8) ? m->cls->jc->mirror : RL(regs, m->regs - m->ins));
+        return false;
+    }
+cancelled:
+    if (tl_session_stopping()) {
         if ((m->flags & 0x20)) dvm_monitor_exit((m->flags & 8) ? m->cls->jc->mirror : RL(regs, m->regs - m->ins));
         return false;
     }

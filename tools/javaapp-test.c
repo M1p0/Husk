@@ -285,11 +285,19 @@ static void *run(void *p)
                               .show_keyboard = h_keyboard, .set_clipboard = h_set_clip, .get_clipboard = h_get_clip, .share = h_share, .set_orientation = h_orientation };
     if (getenv("TL_INSETS")) sscanf(getenv("TL_INSETS"), "%d,%d,%d,%d", &cfg.insets[0], &cfg.insets[1], &cfg.insets[2], &cfg.insets[3]);
     tl_web_harness_size(w, h, cfg.density);
+    int cycles = getenv("TL_CYCLES") ? atoi(getenv("TL_CYCLES")) : 1;
+    for (int cycle = 0; cycle < cycles; cycle++) {
     if (!tl_javaapp_start(&cfg)) { fprintf(stderr, "javaapp: start failed\n"); _exit(1); }
     if (getenv("TL_CTL")) { static pthread_t ct; pthread_create(&ct, NULL, control_thread, getenv("TL_CTL")); }
     int secs = argc > 2 ? atoi(argv[2]) : 10;
     for (int i = 0; i < secs && !tl_javaapp_ended(); i++) sleep(1);
     fprintf(stderr, "javaapp: %lu frames in %d s\n", tl_javaapp_frames(), secs);
+    if (cycles > 1) {
+        if (!tl_javaapp_stop()) { fprintf(stderr, "javaapp: cycle %d failed to stop\n", cycle + 1); _exit(2); }
+        tl_dvm_drop_app(); tl_ld_reset_session();
+        fprintf(stderr, "javaapp: cycle %d stopped; PID %d stays alive\n", cycle + 1, getpid());
+    }
+    }
     fflush(stderr);
     _exit(0);
     return NULL;

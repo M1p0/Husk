@@ -770,6 +770,7 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
 
     // ---- where the page shows
     private boolean mFrameTouchable;
+    private int[] mFrameBlocked;
     private void updateFrame() { updateFrame(false); }
     private void updateFrame(boolean force) {
         if (mDestroyed) return;
@@ -779,9 +780,25 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
         // a dialog, popup or menu over the page takes the touches: the page only gets them while its window is the top one
         husk.ViewRoot root = visible ? husk.ViewRoot.of(getRootView()) : null;
         boolean touchable = root != null && root == husk.ViewRoot.topTouchable();
-        if (!force && visible == mFrameVisible && touchable == mFrameTouchable && (!visible || (loc[0] == mFrameX && loc[1] == mFrameY && getWidth() == mFrameW && getHeight() == mFrameH))) return;
+        ArrayList<android.graphics.Rect> occluders = new ArrayList<>();
+        if (touchable) {
+            View child = this;
+            while (child.getParent() instanceof ViewGroup) {
+                ViewGroup parent = (ViewGroup)child.getParent();
+                parent.huskTouchOccluders(child, occluders);
+                child = parent;
+            }
+        }
+        int[] blocked = new int[occluders.size() * 4];
+        for (int i = 0; i < occluders.size(); i++) {
+            android.graphics.Rect r = occluders.get(i);
+            blocked[i * 4] = r.left; blocked[i * 4 + 1] = r.top;
+            blocked[i * 4 + 2] = r.right; blocked[i * 4 + 3] = r.bottom;
+        }
+        if (!force && visible == mFrameVisible && touchable == mFrameTouchable && java.util.Arrays.equals(blocked, mFrameBlocked) && (!visible || (loc[0] == mFrameX && loc[1] == mFrameY && getWidth() == mFrameW && getHeight() == mFrameH))) return;
+        mFrameBlocked = blocked;
         mFrameVisible = visible; mFrameTouchable = touchable; mFrameX = loc[0]; mFrameY = loc[1]; mFrameW = getWidth(); mFrameH = getHeight();
-        husk.Web.frame(mId, loc[0], loc[1], getWidth(), getHeight(), visible, touchable);
+        husk.Web.frame(mId, loc[0], loc[1], getWidth(), getHeight(), visible, touchable, blocked);
     }
     /** @hide A window came or went: every page says again whether it takes touches. */
     public static void huskWindowsChanged() {

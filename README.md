@@ -23,6 +23,29 @@
 
 Add an APK, tap it, and it opens full-screen.
 
+This checkout adds **Fully Close APK** for Java apps such as PicACG, in the running
+app's toolbar, floating window and library detail page. It ends the app session
+while keeping Husk open. The next launch creates a fresh app and screen; saved
+files stay in place. **Pause and Return** keeps the existing resume behavior.
+If a native task cannot finish, close reports that it is still stopping and keeps
+its live memory for a retry. Other native game engines do not yet offer this action.
+
+Shutdown gate regression: `sh tests/translation-layer/run_session.sh`.
+The Mac Java-app harness also accepts `TL_CYCLES=3` to exercise repeated starts
+and stops within one process (using its existing runtime and ANGLE settings).
+
+Java compatibility fixes preserve resource-array entries with repeated map names,
+keep Android buttons above WebViews touchable, and correct weighted dialog
+measurement so long content can scroll while the footer stays on screen. Java
+launches also release the unused Dart/V8 address reservation to leave room for
+threads and heap allocations on iOS. Certificate loading avoids an invalid
+PKCS#12 passphrase value that could crash Husk at startup.
+
+Framework layout/input regressions: `python3 tests/java-framework/run.py` (a host
+JDK is required; set `HUSK_JDK` if needed). Address-reservation regressions:
+`sh tests/translation-layer/run_compressed_heap.sh` on macOS. The native web hit
+test's build command is in `tests/translation-layer/web_hit.m`.
+
 - **Translation layer** — the game’s own 64-bit Android code runs on the iPhone. Husk stands in for Android around it (C library, Java, GL, Vulkan, audio, input). No Android boot; a game starts in seconds.
 - **Emulation** — a full LineageOS guest under QEMU, for apps the translation layer cannot run yet.
 - **PS4** — fake packages and game folders on iOS 17.4+.
