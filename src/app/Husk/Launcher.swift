@@ -189,8 +189,12 @@ enum Launcher {
     /// Play or open an item: its page, told to start the game as soon as it is up (Android apps just open their page).
     static func play(_ item: LibraryItem, push: (LibraryRoute) -> Void) {
         switch item {
-        case .game(let g): Router.shared.autoPlay = g.id
-        case .ps4(let g): Router.shared.autoPlay = g.libraryID
+        case .game(let g):
+            if !JITLess.enabled { _ = JITBootstrap.selectBudget(for: g.id) }
+            Router.shared.autoPlay = g.id
+        case .ps4(let g):
+            _ = JITBootstrap.selectBudget(for: g.libraryID)
+            Router.shared.autoPlay = g.libraryID
         default: break
         }
         push(item.route)

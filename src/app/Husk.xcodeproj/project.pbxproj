@@ -132,6 +132,7 @@
 		8586F8338A93D7526FAEAD97 /* husk-tl-xmem.c in Sources */ = {isa = PBXBuildFile; fileRef = 42CBC0D7ACAB400BDDFD7F9E /* husk-tl-xmem.c */; };
 		86173612F0474C90016B0405 /* WebAppViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 146A928FB0D632B3FC9E4328 /* WebAppViews.swift */; };
 		88B74AA9060E0D9A6D186CCC /* husk-tl-binder.c in Sources */ = {isa = PBXBuildFile; fileRef = 13804B75FC649BB57295FD28 /* husk-tl-binder.c */; };
+		8962275716665ABE9C802F74 /* JITMemoryBudget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01C92889DE40D61282EF243A /* JITMemoryBudget.swift */; };
 		8A67CA1A0D7F7D19ED445EF5 /* husk-tl-dvm-gles11.c in Sources */ = {isa = PBXBuildFile; fileRef = 69B1AB5462FFCEBD084F5605 /* husk-tl-dvm-gles11.c */; };
 		8B5DED1C7C866D7140418522 /* HuskJITMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 198FA3419B26F852A2B05ED9 /* HuskJITMessages.swift */; };
 		8C743346878007F8D22CEA0A /* AppSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15D08F1730303C74C1B7DE23 /* AppSource.swift */; };
@@ -271,6 +272,7 @@
 
 /* Begin PBXFileReference section */
 		0168E1B352FFD7A4BC207CA5 /* HuskBridgeFS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HuskBridgeFS.swift; sourceTree = "<group>"; };
+		01C92889DE40D61282EF243A /* JITMemoryBudget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JITMemoryBudget.swift; sourceTree = "<group>"; };
 		02BDBFFD3329C33172416AEB /* husk-tl-ld.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "husk-tl-ld.h"; sourceTree = "<group>"; };
 		036699CBF5693E75237EF112 /* PlayDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayDevice.swift; sourceTree = "<group>"; };
 		0384223FE1CD6D8C7C3A22A0 /* PlayStoreManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayStoreManager.swift; sourceTree = "<group>"; };
@@ -616,6 +618,7 @@
 				43C233A62FB57030C0818489 /* JITBuiltIn.swift */,
 				F54A47159D39CB8039E9E44E /* JITCard.swift */,
 				B1791A63C016A301CFCCFB41 /* JITLess.swift */,
+				01C92889DE40D61282EF243A /* JITMemoryBudget.swift */,
 				EF6C1917FEC08090833D9CF0 /* JITPairing.swift */,
 				83275C7FEF2DEB950028D914 /* JITSetup.swift */,
 				5894E74BA308222C01AEE311 /* JITSetupView.swift */,
@@ -1196,6 +1199,7 @@
 				C1A4C57DAA6BFD79AAE5FD88 /* JITBuiltIn.swift in Sources */,
 				FA5016C04E0EFC5FD0CF32F9 /* JITCard.swift in Sources */,
 				7EFCE4A5CC3A0F9298535EF0 /* JITLess.swift in Sources */,
+				8962275716665ABE9C802F74 /* JITMemoryBudget.swift in Sources */,
 				E7095C2C706335203227319A /* JITPairing.swift in Sources */,
 				70AF7E999105691EB51B54FD /* JITSetup.swift in Sources */,
 				D61EF536158A8495F2B0CE79 /* JITSetupView.swift in Sources */,

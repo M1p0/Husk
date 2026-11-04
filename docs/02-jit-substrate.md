@@ -150,6 +150,32 @@ per 16 KiB page over USB, with a response read per command:
 This is a straight-line tradeoff between attach latency and JIT headroom, and it is
 the first thing to measure on device.
 
+### Adaptive app budgets
+
+Translation-layer apps now start with a 2 MiB budget and keep their own profile in
+`Documents/jit-memory.json`. Observed use is rounded up to a power of two. A confirmed
+code-region exhaustion advances through doubling steps to cover the failed allocation,
+up to an automatic ceiling of 1 GiB. Full Android keeps a 256 MiB minimum to match
+`tb-size`; PS4 keeps its existing 512 MiB baseline and is not tuned by this policy.
+The developer `husk.jit.megabytes` override remains a minimum.
+
+The allocator atomically commits the run UUID, held capacity, used bytes and refused
+request before returning failure. The next cold launch can therefore adjust the
+profile even if the caller immediately crashes. Soft launch failures use the same
+recovery. Missing executable permissions, shared-region conflicts, ordinary crashes
+without this evidence, and terminal system/Java memory exhaustion do not increase
+the budget. Frames continuing after a refused allocation clear that evidence; each
+run can increase its saved budget only once.
+
+The held region remains fixed for the process. A selected game whose saved requirement
+exceeds it asks Husk to close and reopen before entering the engine. The next launch
+prewarms the selected profile, and the existing game-switch mechanism resumes the game.
+Moving to a smaller profile takes effect at the next cold launch as well.
+
+Validation: `sh tests/translation-layer/run_jit_budget.sh` exercises the real macOS
+dual-mapped allocator and the persistence/recovery policy. Device verification is
+still required for debugger attachment, game launches and actual crash/relaunch behavior.
+
 ## Why this fits QEMU unusually well
 
 QEMU's TCG allocates its translation buffer **once, at init**, sized by

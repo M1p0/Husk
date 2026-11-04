@@ -58,6 +58,13 @@ void tl_xmem_flush(const void *rx, size_t bytes);
 size_t tl_xmem_used(void);
 size_t tl_xmem_size(void);
 
+/* Adaptive iOS code-region budget. Capacity evidence is committed before allocation returns, outside signal handlers.
+ * NULL stops watching. Missing JIT and shared-region conflicts do not produce exhaustion records. */
+void husk_jit_budget_watch(const char *path, const char *run_id);
+void husk_jit_budget_set_target_bytes(size_t bytes);
+size_t husk_jit_budget_region_bytes(void);
+void husk_jit_budget_progress(void);
+
 /* Whether p is within dist bytes of the executable region (a JIT asking for code memory near its own code). */
 bool tl_xmem_near(const void *p, size_t dist);
 

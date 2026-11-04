@@ -45,31 +45,32 @@ enum JITBootstrap {
                          + "return 0 instead of killing the process")
     }
 
-    /// Size QEMU will ask for. Must match tb-size in the phase 1 command line:
-    /// a smaller region here means QEMU allocates a second one, at a point where
-    /// StikDebug may be long gone.
-    // Back to 256 MiB. Raising this to 512 was one of three changes made at
-    // once in v15, and v15 was the first build to die inside qemu_init(). The
-    // guest RAM -- the other suspect -- has since been shown to map and write
-    // cleanly at 6144 MiB, which leaves this. The region itself allocates and
-    // passes its selftest at 512; whatever objects is further in, where TCG
-    // carves the buffer into per-vCPU regions.
-    //
-    // 512 MiB since the native runtime runs Minecraft: its main library alone is a 354 MiB image that has to sit in this
-    // region, with the stubs the loader places beside it. A larger prewarm is safe for QEMU, which is handed the
-    // prewarmed region whenever it is at least what tb-size asks for.
-    // A smaller region leaves room for Flutter's 4 GiB Dart cage on devices
-    // whose signing profile cannot grant extended virtual addressing. Keep
-    // the default large enough for Minecraft; a device may use a smaller budget.
-    static let jitBytes: Int = {
+    /// Apps start at 2 MiB and learn their budget. Full Android needs at least its 256 MiB TCG cache;
+    /// PS4 keeps its existing 512 MiB baseline because its separate allocator is not tuned here.
+    /// Keep the developer override as a minimum, allowing recovery to grow beyond it when necessary.
+    private static let manualMinimumMiB: Int = {
         let defaults = UserDefaults.standard
         let key = "husk.jit.megabytes"
-        let mib = defaults.integer(forKey: key)
-        guard [128, 256, 512].contains(mib) else { return 512 * 1024 * 1024 }
-        // Remember a developer launch override for later launches from Home.
-        defaults.set(mib, forKey: key)
-        return mib * 1024 * 1024
+        let override = defaults.integer(forKey: key)
+        guard (2...JITMemoryBudget.maximumMiB).contains(override) else { return 2 }
+        // Preserve developer launch arguments for subsequent launches from Home, as before automatic sizing.
+        defaults.set(override, forKey: key)
+        return JITMemoryBudget.roundedMiB(bytes: override * JITMemoryBudget.mib)
     }()
+
+    static var jitBytes: Int {
+        let automatic = Onboarding.autoStart ? max(256, JITMemoryBudget.shared.selectedMiB) : JITMemoryBudget.shared.selectedMiB
+        return max(manualMinimumMiB, automatic) * JITMemoryBudget.mib
+    }
+
+    /// A live one-shot mapping cannot grow after the debugger has gone away. Save the selected app for the next launch
+    /// and let the caller offer a clean restart before entering its engine with an already-known undersized region.
+    static func selectBudget(for appID: String) -> Bool {
+        let required = JITMemoryBudget.shared.select(appID) * JITMemoryBudget.mib
+        husk_jit_budget_set_target_bytes(jitBytes)
+        let held = husk_jit_budget_region_bytes()
+        return held == 0 || held >= required
+    }
 
     /// True once the region is held. The memory budget needs this: after a
     /// prewarm the JIT is already counted in the footprint, so subtracting it
@@ -87,6 +88,8 @@ enum JITBootstrap {
     @discardableResult
     static func prewarm() -> Bool {
         if prewarmed { return true }
+        let jitBytes = Self.jitBytes
+        husk_jit_budget_set_target_bytes(jitBytes)
         // Before iOS 26 Husk can make the region itself where the device allows it (a jailbreak,
         // a debugger that attached and let go such as TrollStore's enable-jit, or dynamic-codesigning),
         // so it does not wait for CS_DEBUGGED there if jailbroken: Dopamine hides that flag from apps unless
@@ -104,6 +107,14 @@ enum JITBootstrap {
             selfGrantTried = true
             if mapJITWorks {
                 HuskLog.log("jit", "not trapping for a JIT region (no StikDebug); MAP_JIT executes here")
+                // Claim the selected budget here as well. Native apps and PS4 need a held dual mapping, and the
+                // mapping lookup must remain a read-only query instead of allocating a hard-coded 256 MiB later.
+                prepareCompressedHeap()
+                if husk_ios_jit_prewarm_self(jitBytes) {
+                    prewarmed = true
+                } else {
+                    releaseUnusedCompressedHeap()
+                }
                 lastFailure = nil
                 return true
             }

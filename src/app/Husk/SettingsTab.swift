@@ -692,6 +692,8 @@ struct JITSettings: View {
                           mono: false)
                 DetailRow(label: "Executable memory",
                           value: JITBootstrap.isLive ? "granted" : "not claimed", mono: false)
+                DetailRow(label: "Code memory", value: "\(husk_jit_budget_region_bytes() >> 20) MiB", mono: false)
+                DetailRow(label: "Next launch budget", value: "\(JITBootstrap.jitBytes >> 20) MiB", mono: false)
                 // The two routes, named separately. Either one is enough, and
                 // when someone reports "JIT does not work" these two rows are
                 // the whole diagnosis.

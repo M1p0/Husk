@@ -522,7 +522,9 @@ tl_dual_mapping *tl_find_stikdebug_prewarmed(void)
     tl_dual_mapping *(*get_fn)(void) = (tl_dual_mapping *(*)(void))dlsym(RTLD_DEFAULT, "husk_ios_jit_get_mapping");
     if (get_fn) {
         tl_dual_mapping *m = get_fn();
-        if (is_valid_dual_mapping(m)) return m;
+        // Current libraries expose the mapping directly. NULL means no region, not an invitation to prewarm a fixed
+        // 256 MiB from a query (or inspect private offsets). The app selects and claims its adaptive budget itself.
+        return is_valid_dual_mapping(m) ? m : NULL;
     }
 
     /* Ensure prewarm has been called in case this attempt ran before QEMU. */

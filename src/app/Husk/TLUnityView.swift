@@ -265,6 +265,8 @@ final class TLUnityUIView: UIView, UIKeyInput {
     }
 
     private func launch(width: Int, height: Int) {
+        // Register the run before any native allocation, even if SwiftUI has not delivered its onAppear yet.
+        if let app = TranslationLayerStore.shared.apps.first(where: { $0.apks.first == apk }) { CrashReport.gameStarted(app) }
         launched = true
         launchedSize = bounds.size
         let angle = (Bundle.main.privateFrameworksPath ?? "") + "/libANGLE-shared.dylib"
@@ -806,6 +808,7 @@ final class TLUnityModel: ObservableObject {
         ticks += 1
         state = husk_unity_state()
         frames = husk_unity_frames()
+        CrashReport.observeBudget(state: state, frames: frames)
         if ticks % 4 == 0, let c = husk_tl_attempt_log() {
             let text = String(cString: c)
             free(c)
