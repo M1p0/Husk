@@ -313,7 +313,6 @@ struct ContentView: View {
     /// the action behind a button reads as a button that does nothing, so the
     /// JIT prompt is raised here instead.
     private func startFromLibrary() {
-        _ = JITBootstrap.selectBudget(for: JITMemoryBudget.androidID)
         guard JITBootstrap.ready else {
             HuskLog.log("ui", "start asked for without JIT; enabling with \(jit.resolvedMethod.title)")
             jit.enable()
@@ -324,11 +323,6 @@ struct ContentView: View {
 
     private func start() {
         guard !started else { return }
-        guard JITBootstrap.selectBudget(for: JITMemoryBudget.androidID) else {
-            host.say("Android needs Husk to reopen", "Close Husk and open it again to prepare enough code memory for Android.", good: false)
-            booting = false
-            return
-        }
         guard JITBootstrap.ready else { return }
         HuskLog.log("ui", "JIT is available; starting QEMU")
         // Take the JIT region at the last moment before QEMU, as well as before

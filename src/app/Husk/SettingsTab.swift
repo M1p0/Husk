@@ -640,8 +640,8 @@ struct JITSettings: View {
     @AppStorage(JITCoordinator.autoEnableKey) private var autoJIT = false
     @AppStorage(JITCoordinator.trollStoreAutoKey) private var trollStoreJIT = true
     @State private var keepAttached = JITBootstrap.keepDebuggerAttached
-    @AppStorage(JITMemoryBudget.fallbackKey) private var fallbackMiB = JITMemoryBudget.defaultFallbackMiB
-    @State private var fallbackText = String(JITMemoryBudget.fallbackMiB())
+    @AppStorage(JITMemoryBudget.settingKey) private var memoryMiB = JITMemoryBudget.defaultMiB
+    @State private var memoryText = String(JITMemoryBudget.megabytes())
 
     private var pairingLabel: String {
         switch jit.pairingSource {
@@ -661,30 +661,30 @@ struct JITSettings: View {
 
             Section {
                 HStack {
-                    Text("Fallback memory")
+                    Text("Memory size")
                     Spacer()
-                    TextField("512", text: $fallbackText)
+                    TextField("512", text: $memoryText)
                         .keyboardType(.numberPad)
                         .multilineTextAlignment(.trailing)
                         .frame(width: 90)
-                        .accessibilityLabel("Fallback JIT memory in MB")
+                        .accessibilityLabel("JIT memory in MB")
                     Text("MB").foregroundStyle(.secondary)
                 }
                 Button("Save memory setting") {
-                    if let value = JITMemoryBudget.validFallback(fallbackText) {
-                        fallbackMiB = value
-                        fallbackText = String(value)
+                    if let value = JITMemoryBudget.validMegabytes(memoryText) {
+                        memoryMiB = value
+                        memoryText = String(value)
                     }
                 }
-                .disabled(JITMemoryBudget.validFallback(fallbackText) == nil
-                          || JITMemoryBudget.validFallback(fallbackText) == fallbackMiB)
-                if !fallbackText.isEmpty, JITMemoryBudget.validFallback(fallbackText) == nil {
+                .disabled(JITMemoryBudget.validMegabytes(memoryText) == nil
+                          || JITMemoryBudget.validMegabytes(memoryText) == memoryMiB)
+                if !memoryText.isEmpty, JITMemoryBudget.validMegabytes(memoryText) == nil {
                     Text("Enter a whole number from 2 to 1024 MB.").font(.caption).foregroundStyle(.orange)
                 }
             } header: {
                 Text("JIT memory")
             } footer: {
-                Text("Used only when no app has been selected or its memory requirement is unknown. App estimates and measured use take priority. Reopen Husk to change memory that has already been allocated.")
+                Text("JIT uses the size set here for all apps. Close and reopen Husk after changing this setting.")
             }
 
             Section {

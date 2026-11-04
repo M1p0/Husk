@@ -105,12 +105,9 @@ struct AppDiagnosis: Identifiable, Equatable {
         }
 
         if let l = lines.last(where: { $0.contains("jit-budget: capacity-exhausted") || $0.contains("jit-budget: recovered") }),
-           l.contains("capacity-exhausted"), !JITMemoryBudget.systemMemoryWasLow(text) {
-            let atLimit = l.contains("capacity=\(JITMemoryBudget.maximumMiB * JITMemoryBudget.mib) ")
+           l.contains("capacity-exhausted"), !lines.suffix(40).contains(where: { $0.contains("main thread ended with java.lang.OutOfMemoryError") }) {
             return AppDiagnosis(kind: .noJIT, title: "Not enough JIT memory",
-                                detail: atLimit
-                                    ? "This game needs more code memory than Husk's automatic limit (1 GiB)."
-                                    : "The game ran out of space for its code. Close and reopen Husk before trying again.", evidence: l)
+                                detail: "The app ran out of code memory. Increase JIT memory in Settings, then close and reopen Husk.", evidence: l)
         }
 
         // The JIT region is shared: Android (QEMU) holds its top half while it runs, an app's libraries fill it from the bottom

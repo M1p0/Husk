@@ -63,7 +63,6 @@ final class CrashReport: ObservableObject {
 
     private static var running: TLApp?
     private static var observers: [NSObjectProtocol] = []
-    private static var lastBudgetFrames: UInt = 0
 
     /// A game is starting: if Husk ends before `gameEnded`, the next launch will say so.
     ///
@@ -72,31 +71,15 @@ final class CrashReport: ObservableObject {
     /// no background notice at all (it is merely inactive while the switcher is up), which read as a crash every time
     /// (a Geometry Dash session closed that way). The note goes when Husk stops being active and comes back with it.
     static func gameStarted(_ app: TLApp) {
-        let abis = app.report?.abis ?? []
-        let measuresNativeRegion = abis.isEmpty || abis.contains("arm64-v8a")
-        if running?.id != app.id, !JITLess.enabled, measuresNativeRegion {
-            lastBudgetFrames = 0
-            let held = husk_jit_budget_region_bytes()
-            _ = JITMemoryBudget.shared.begin(appID: app.id, capacityBytes: held > 0 ? held : JITBootstrap.jitBytes,
-                                           initialUsedBytes: tl_xmem_used())
-            JITMemoryBudget.shared.resume()
-            watchBudget()
-        }
         running = app
         writeMarker()
         if observers.isEmpty {
             let nc = NotificationCenter.default
             observers.append(nc.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
                 try? FileManager.default.removeItem(at: marker)
-                husk_jit_budget_watch(nil, nil)
-                JITMemoryBudget.shared.suspend()
             })
             observers.append(nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
                 writeMarker()
-                if running != nil {
-                    JITMemoryBudget.shared.resume()
-                    watchBudget()
-                }
             })
         }
     }
@@ -108,28 +91,7 @@ final class CrashReport: ObservableObject {
     }
 
     /// The game was closed the normal way.
-    static func gameEnded(normallyClosed: Bool = false) {
-        // Capture a soft loader failure even if its view closes before the next poll. Simply pausing a game is not failure.
-        let state = husk_unity_state()
-        if state == Int32(HUSK_UNITY_FAILED) || state == Int32(HUSK_UNITY_ENDED) {
-            recoverBudget(log: HuskLog.recentLines().joined(separator: "\n"))
-        }
-        let log = HuskLog.recentLines().joined(separator: "\n")
-        let successful = (normallyClosed || state == Int32(HUSK_UNITY_RUNNING) || state == Int32(HUSK_UNITY_ENDED))
-            && state != Int32(HUSK_UNITY_FAILED) && !JITMemoryBudget.systemMemoryWasLow(log)
-        if state == Int32(HUSK_UNITY_RUNNING) {
-            JITMemoryBudget.shared.recordUsage(bytes: tl_xmem_used(), madeProgress: false)
-        }
-        if let size = JITMemoryBudget.shared.calibrateOnExit(bytes: tl_xmem_used(), successful: successful) {
-            HuskLog.log("jit", "APK exit measured; next code-memory budget \(size) MiB")
-        }
-        husk_jit_budget_watch(nil, nil)
-        if !normallyClosed && state == Int32(HUSK_UNITY_RUNNING) && husk_native_loaded_apk() != nil {
-            // Leaving a screen pauses an APK. Keep its measurement baseline if the same session resumes later.
-            JITMemoryBudget.shared.suspend()
-        } else {
-            JITMemoryBudget.shared.end()
-        }
+    static func gameEnded() {
         running = nil
         try? FileManager.default.removeItem(at: marker)
     }
@@ -159,30 +121,6 @@ final class CrashReport: ObservableObject {
         case .unknown: break
         case .diagnosed(let d): GameStatusStore.shared.record(pending!.appID, .crashed, diagnosis: d)
         }
-    }
-
-    private static func watchBudget() {
-        guard let run = JITMemoryBudget.shared.activeRun else { return }
-        husk_jit_budget_watch(JITMemoryBudget.shared.exhaustionURL.path, run.id)
-    }
-
-    private static func recoverBudget(log: String) {
-        if let growth = JITMemoryBudget.shared.recover(log: log) {
-            HuskLog.log("jit", "\(growth.appID): code region exhausted; next launch uses \(growth.nextMiB) MiB (was \(growth.previousMiB) MiB)")
-        }
-    }
-
-    /// Shared by full-screen and windowed apps. Keep observing later allocations, including code generated during play.
-    static func observeBudget(state: Int32, frames: UInt) {
-        guard running != nil, JITMemoryBudget.shared.activeRun != nil else { return }
-        if state == Int32(HUSK_UNITY_FAILED) || state == Int32(HUSK_UNITY_ENDED) {
-            recoverBudget(log: HuskLog.recentLines().joined(separator: "\n"))
-        } else if state == Int32(HUSK_UNITY_RUNNING) {
-            if frames > lastBudgetFrames { husk_jit_budget_progress() }
-            // C clears recovery evidence under the same lock used by allocations.
-            JITMemoryBudget.shared.recordUsage(bytes: tl_xmem_used(), madeProgress: false)
-        }
-        lastBudgetFrames = frames
     }
 
     /// The lines of a log worth a glance: the runtime's and the crash handler's, not the JIT's housekeeping.

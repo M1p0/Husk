@@ -38,8 +38,9 @@ do not yet offer this action.
 WebKit completion handlers are canceled before their owners disappear, queued
 UI work from the old session is discarded, and abandoned SQLite connections,
 audio and decoder resources are released after the app's threads have exited.
-Reopening accounts for the Java runtime code already resident in the JIT region,
-so its cold-start memory budget is not charged a second time after closing.
+JIT memory uses the value entered in Settings for every app. APK scans, crashes
+and successful runs do not change it. Change the value, then fully reopen Husk
+to allocate a different region. Java runtime code stays resident across APK sessions.
 
 Shutdown gate regression: `sh tests/translation-layer/run_session.sh`.
 Guest network/HTTP shutdown regression (macOS):
@@ -50,6 +51,15 @@ WebKit pending-completion/session isolation regression (macOS):
 `sh tests/translation-layer/run_web_session.sh`.
 The Mac Java-app harness also accepts `TL_CYCLES=3` to exercise repeated starts
 and stops within one process (using its existing runtime and ANGLE settings).
+
+For Xcode development signing, use
+`HUSK_ENTITLEMENTS=Husk/HuskDevelopment.entitlements` and
+`-allowProvisioningUpdates`. This requests Increased Memory Limit in both the
+provisioning profile and app signature while preserving the interpreter's
+32 MiB Java worker stacks. Read `os_proc_available_memory()` on the device to
+verify the granted budget; adding a key only to the executable is insufficient.
+The separate Extended Virtual Addressing capability requires a signing team
+that supports it and is omitted from this development entitlement file.
 
 Java compatibility fixes preserve resource-array entries with repeated map names,
 keep Android buttons above WebViews touchable, and correct weighted dialog

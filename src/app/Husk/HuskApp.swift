@@ -64,13 +64,7 @@ struct HuskApp: App {
         // to lose the first line of.
         HuskLog.start()
         HuskLog.logFootprint("app-launch")
-        // Before any view's ready check can claim JIT: apply durable evidence from the run that crashed.
-        if FileManager.default.fileExists(atPath: JITMemoryBudget.shared.exhaustionURL.path) {
-            let previous = (try? String(contentsOf: CrashReport.previousLogURL, encoding: .utf8)) ?? ""
-            if let growth = JITMemoryBudget.shared.recover(log: previous) {
-                HuskLog.log("jit", "\(growth.appID): recovered code-region exhaustion; next budget \(growth.nextMiB) MiB (was \(growth.previousMiB) MiB)")
-            }
-        }
+        JITMemoryBudget.removeLegacyProfiles()
         // Before anything asks a debugger for anything: was this process already marked as debugged (a jailbreak that allows JIT in apps)?
         JITBootstrap.noteLaunchState()
         HuskLog.log("jit", "debugged at launch: \(JITBootstrap.debuggedAtLaunch); TrollStore install: \(JITBootstrap.isInstalledWithTrollStore); jailbreak: \(JITBootstrap.isJailbroken); can grant its own JIT: \(JITBootstrap.canGrantOwnJIT)")
@@ -78,8 +72,6 @@ struct HuskApp: App {
         // Then the trap guard: without it, any brk we issue when StikDebug is
         // absent kills the process outright rather than returning an error.
         JITBootstrap.installTrapGuard()
-        // Register APK estimates before a view or an automatic attach can ask for executable memory.
-        _ = TranslationLayerStore.shared
 
         // Android no longer starts by itself unless someone turns that on: once, for everyone who had it from the old default.
         let d = UserDefaults.standard

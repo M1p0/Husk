@@ -45,30 +45,8 @@ enum JITBootstrap {
                          + "return 0 instead of killing the process")
     }
 
-    /// App estimates and measurements take priority. The global MB setting is a fallback, never an app's minimum.
-    static var jitBytes: Int {
-        JITMemoryBudget.shared.allocationMiB(fallbackMiB: JITMemoryBudget.fallbackMiB(), androidAtLaunch: Onboarding.autoStart)
-            * JITMemoryBudget.mib
-    }
-
-    /// A live one-shot mapping cannot grow after the debugger has gone away. Save the selected app for the next launch
-    /// and let the caller offer a clean restart before entering its engine with an already-known undersized region.
-    static func selectBudget(for appID: String) -> Bool {
-        _ = JITMemoryBudget.shared.select(appID)
-        let required = jitBytes
-        husk_jit_budget_set_target_bytes(jitBytes)
-        let held = husk_jit_budget_region_bytes()
-        let continuing = JITMemoryBudget.shared.activeRun?.appID == appID && husk_native_loaded_apk() != nil
-        // Shared Java runtime images survive close and are reused. Only the additional code needs the unused tail;
-        // APK-specific images from previous sessions still count as occupied and receive no reuse credit.
-        let used = continuing ? 0 : tl_xmem_used()
-        let additional = continuing ? required : JITMemoryBudget.shared.additionalBytes(
-            for: appID, coldBytes: required, sharedBytes: tl_xmem_shared_used())
-        if held > 0 && !continuing {
-            HuskLog.log("jit", "launch budget: cold=\(required) shared=\(tl_xmem_shared_used()) additional=\(additional) used=\(used) capacity=\(held)")
-        }
-        return held == 0 || (used <= held && additional <= held - used)
-    }
+    /// Always request the size entered in Settings, regardless of the selected app or its previous runs.
+    static var jitBytes: Int { JITMemoryBudget.bytes() }
 
     /// True once the region is held. The memory budget needs this: after a
     /// prewarm the JIT is already counted in the footprint, so subtracting it

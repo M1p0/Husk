@@ -190,10 +190,8 @@ enum Launcher {
     static func play(_ item: LibraryItem, push: (LibraryRoute) -> Void) {
         switch item {
         case .game(let g):
-            if !JITLess.enabled { _ = JITBootstrap.selectBudget(for: g.id) }
             Router.shared.autoPlay = g.id
         case .ps4(let g):
-            _ = JITBootstrap.selectBudget(for: g.libraryID)
             Router.shared.autoPlay = g.libraryID
         default: break
         }

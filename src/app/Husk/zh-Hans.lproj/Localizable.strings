@@ -447,11 +447,13 @@
 "Husk is still releasing this APK's resources and will finish closing it automatically. The app cannot be resumed while it is stopping." = "Husk 仍在释放此 APK 的资源，完成后会自动关闭。停止期间无法恢复操作。";
 "Husk is releasing the app's resources. You can return to the library while it finishes." = "Husk 正在释放应用资源。等待期间可以返回应用库。";
 "JIT memory" = "JIT 内存";
-"Fallback memory" = "后备内存";
-"Fallback JIT memory in MB" = "后备 JIT 内存，单位 MB";
+"Memory size" = "内存大小";
+"JIT memory in MB" = "JIT 内存，单位 MB";
 "Save memory setting" = "保存内存设置";
 "Enter a whole number from 2 to 1024 MB." = "请输入 2 至 1024 之间的整数，单位 MB。";
-"Used only when no app has been selected or its memory requirement is unknown. App estimates and measured use take priority. Reopen Husk to change memory that has already been allocated." = "仅在尚未选择应用或无法获取应用所需内存时使用；应用的预估和实测用量优先。已分配的内存需要重开 Husk 后才能改变。";
+"JIT uses the size set here for all apps. Close and reopen Husk after changing this setting." = "所有应用均使用此处设置的 JIT 内存大小。修改后请彻底退出并重新打开 Husk。";
 "Code memory" = "已分配代码内存";
 "Next launch budget" = "待申请代码内存";
 "A task in the app has not finished yet. Wait a moment and try Fully Close APK again. Husk has kept the session to avoid losing or corrupting its data." = "应用中仍有任务未结束。请稍等后再次点击“彻底关闭 APK”。Husk 已保留当前会话，避免损坏数据。";
+
+"The app ran out of code memory. Increase JIT memory in Settings, then close and reopen Husk." = "应用的代码内存不足。请在设置中调大 JIT 内存，然后彻底退出并重新打开 Husk。";

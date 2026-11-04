@@ -144,7 +144,6 @@ struct GamePage: View {
     @State private var preparing: String?
     @State private var prepareFailed: String?
     @State private var confirmQuit = false
-    @State private var jitBudgetRestart = false
 
     private var runs: Bool { app.report?.canRun == true }
 
@@ -295,9 +294,7 @@ struct GamePage: View {
                 exit(0)
             }
         } message: {
-            Text(jitBudgetRestart
-                 ? "A larger code-memory budget has been saved for this game. Close Husk, then open it again to start \(app.label)."
-                 : "\(blockedBy ?? "The other game") is still loaded and only one game can run per session. Husk closes; open it again and \(app.label) starts by itself.")
+            Text("\(blockedBy ?? "The other game") is still loaded and only one game can run per session. Husk closes; open it again and \(app.label) starts by itself.")
         }
         .confirmationDialog("Remove \(app.label)?", isPresented: $confirmRemove, titleVisibility: .visible) {
             Button("Remove", role: .destructive) {
@@ -311,7 +308,6 @@ struct GamePage: View {
         .onAppear {
             // Kept until JIT is on: this page is rebuilt when it attaches (.id above), and plays then.
             guard Router.shared.autoPlay == app.id, blockedBy == nil else { return }
-            if !JITLess.enabled { _ = JITBootstrap.selectBudget(for: app.id) }
             guard Launcher.jitOn || JITLess.enabled else { return }
             Router.shared.autoPlay = nil
             play()
@@ -321,12 +317,6 @@ struct GamePage: View {
     /// Play: in JIT-less mode the game's libraries are converted and signed first (once); with Geode on, whatever it is missing
     /// (a newer release, its resources) is fetched first.
     private func play() {
-        if !JITLess.enabled, !JITBootstrap.selectBudget(for: app.id) {
-            jitBudgetRestart = true
-            confirmQuit = true
-            return
-        }
-        jitBudgetRestart = false
         if JITLess.enabled, SigningCertificate.credentials() != nil, preparing == nil {
             preparing = "Preparing for JIT-less mode…"
             Task {
@@ -457,7 +447,6 @@ struct GamePage: View {
                     .frame(maxWidth: .infinity).frame(height: 50)
             } else {
                 BigButton(title: "Turn On JIT to Play", systemImage: "bolt.fill") {
-                    _ = JITBootstrap.selectBudget(for: app.id)
                     turnOnJIT()
                 }
             }
@@ -475,7 +464,6 @@ struct PS4GamePage: View {
     @ObservedObject private var jit = JITCoordinator.shared
     @State private var playing = false
     @State private var confirmQuit = false
-    @State private var jitBudgetRestart = false
 
     private var item: LibraryItem { .ps4(game) }
 
@@ -487,12 +475,6 @@ struct PS4GamePage: View {
     }
 
     private func playPS4() {
-        guard JITBootstrap.selectBudget(for: game.libraryID) else {
-            jitBudgetRestart = true
-            confirmQuit = true
-            return
-        }
-        jitBudgetRestart = false
         playing = true
     }
 
@@ -540,14 +522,11 @@ struct PS4GamePage: View {
                 exit(0)
             }
         } message: {
-            Text(jitBudgetRestart
-                 ? "Close Husk, then open it again to prepare enough code memory for \(game.title)."
-                 : "\(blockedBy ?? "The other game") is still loaded and only one game can run per session. Husk closes; open it again and \(game.title) starts by itself.")
+            Text("\(blockedBy ?? "The other game") is still loaded and only one game can run per session. Husk closes; open it again and \(game.title) starts by itself.")
         }
         .id(jit.attachGeneration)
         .onAppear {
             guard Router.shared.autoPlay == game.libraryID, blockedBy == nil, PS4Store.available else { return }
-            _ = JITBootstrap.selectBudget(for: game.libraryID)
             guard Launcher.jitOn else { return }
             Router.shared.autoPlay = nil
             playPS4()
@@ -566,7 +545,6 @@ struct PS4GamePage: View {
                     .frame(maxWidth: .infinity).frame(height: 50)
             } else {
                 BigButton(title: "Turn On JIT to Play", systemImage: "bolt.fill") {
-                    _ = JITBootstrap.selectBudget(for: game.libraryID)
                     turnOnJIT()
                 }
             }
@@ -789,7 +767,6 @@ struct AndroidSystemPage: View {
             case .missing:
                 BigButton(title: "Download Android", systemImage: "arrow.down.circle") {
                     // Claim the JIT region before the download: it takes a while, and StikDebug lets go by the end of it.
-                    _ = JITBootstrap.selectBudget(for: JITMemoryBudget.androidID)
                     JITBootstrap.prewarm()
                     guest.download()
                 }
@@ -799,7 +776,6 @@ struct AndroidSystemPage: View {
                 ProgressView().frame(height: 50)
             case .failed:
                 BigButton(title: "Try Again", systemImage: "arrow.clockwise") {
-                    _ = JITBootstrap.selectBudget(for: JITMemoryBudget.androidID)
                     JITBootstrap.prewarm()
                     guest.download()
                 }

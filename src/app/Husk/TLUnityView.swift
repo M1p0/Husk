@@ -808,7 +808,6 @@ final class TLUnityModel: ObservableObject {
         ticks += 1
         state = husk_unity_state()
         frames = husk_unity_frames()
-        CrashReport.observeBudget(state: state, frames: frames)
         if ticks % 4 == 0, let c = husk_tl_attempt_log() {
             let text = String(cString: c)
             free(c)
