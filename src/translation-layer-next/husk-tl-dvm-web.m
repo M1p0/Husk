@@ -69,7 +69,7 @@ static __weak HView *g_screen;    /* the app's GL view */
 static HView *g_container;
 static float g_scale = 1;         /* surface pixels per point */
 static pthread_mutex_t g_hit_lock = PTHREAD_MUTEX_INITIALIZER;
-typedef struct { int id; bool visible, touchable; float x, y, w, h; CGRect *blocked; int nblocked; } hit_rect;   /* points */
+typedef struct { int id; bool visible, touchable; float x, y, w, h; CGRect *blocked; int nblocked, scroll_axes; } hit_rect;   /* points */
 static hit_rect g_hits[16];
 static int g_nhits;
 
@@ -250,7 +250,7 @@ static NSString *bridge_js(void)
 @property (nonatomic, strong) WKWebView *web;
 @property (nonatomic) bool apiLoad;            /* the next navigation is the app's own loadUrl: not offered to shouldOverrideUrlLoading */
 @property (nonatomic, strong) NSMutableArray<NSString *> *scripts;
-@property (nonatomic) bool edgeLinked;
+@property (nonatomic, weak) HView *gestureHost;
 @property (nonatomic) bool tornDown;
 @end
 
@@ -444,7 +444,20 @@ static void on_main(dispatch_block_t b) {
 static void dispatch_sync_main_safe(dispatch_block_t b) { if ([NSThread isMainThread]) b(); else on_main(b); }
 static HuskWeb *view_of(int wid) { return g_views[@(wid)]; }
 
-static void update_hits(int wid, bool visible, bool touchable, CGRect r, CGRect *blocked, int nblocked)
+static void link_host_pans(HuskWeb *h)
+{
+#if TARGET_OS_IPHONE
+    if (h.gestureHost == g_container) return;
+    /* The host's recognizers arbitrate before WebKit, including after the running app moves to a new host. */
+    for (UIGestureRecognizer *g in g_container.gestureRecognizers)
+        if ([g isKindOfClass:UIPanGestureRecognizer.class]) [h.web.scrollView.panGestureRecognizer requireGestureRecognizerToFail:g];
+    h.gestureHost = g_container;
+#else
+    (void)h;
+#endif
+}
+
+static void update_hits(int wid, bool visible, bool touchable, CGRect r, CGRect *blocked, int nblocked, int scroll_axes)
 {
     pthread_mutex_lock(&g_hit_lock);
     int i = 0;
@@ -452,7 +465,7 @@ static void update_hits(int wid, bool visible, bool touchable, CGRect r, CGRect 
     if (i == g_nhits && g_nhits < 16) g_nhits++;
     if (i < 16) {
         free(g_hits[i].blocked);
-        g_hits[i] = (hit_rect){ wid, visible, touchable, (float)r.origin.x, (float)r.origin.y, (float)r.size.width, (float)r.size.height, blocked, nblocked };
+        g_hits[i] = (hit_rect){ wid, visible, touchable, (float)r.origin.x, (float)r.origin.y, (float)r.size.width, (float)r.size.height, blocked, nblocked, scroll_axes };
     } else free(blocked);
     int n = 0;
     for (int k = 0; k < g_nhits; k++) if (g_hits[k].visible) n++;
@@ -512,20 +525,14 @@ NAT(W_frame)
         const int32_t *v = values + i * 4;
         blocked[i] = CGRectMake(v[0] / g_scale, v[1] / g_scale, (v[2] - v[0]) / g_scale, (v[3] - v[1]) / g_scale);
     }
-    update_hits(wid, vis, touchable, r, blocked, count);
+    update_hits(wid, vis, touchable, r, blocked, count, a[8].i);
     on_main(^{
         HuskWeb *h = view_of(wid);
         if (!h) return;
         /* the screen may have had no superview when the web view was made */
         if (!g_container) ensure_container();
         if (g_container && !h.web.superview) [g_container addSubview:h.web];
-#if TARGET_OS_IPHONE
-        /* the back swipe from the screen's edge wins over the page's own scrolling */
-        if (!h.edgeLinked) {
-            for (UIGestureRecognizer *g in g_container.gestureRecognizers)
-                if ([g isKindOfClass:UIScreenEdgePanGestureRecognizer.class]) { [h.web.scrollView.panGestureRecognizer requireGestureRecognizerToFail:g]; h.edgeLinked = true; }
-        }
-#endif
+        link_host_pans(h);
 #if TARGET_OS_IPHONE
         if (g_screen && g_container && g_container.superview == g_screen.superview && !CGRectEqualToRect(g_container.frame, g_screen.frame)) g_container.frame = g_screen.frame;
 #endif
@@ -808,7 +815,7 @@ NAT(W_cookieAny)
 static const struct { const char *name, *sig; dvm_native_fn fn; } k_web[] = {
     { "create", "(I)V", W_create },
     { "destroy", "(I)V", W_destroy },
-    { "frame", "(IIIIIZZ[I)V", W_frame },
+    { "frame", "(IIIIIZZ[II)V", W_frame },
     { "load", "(ILjava/lang/String;[Ljava/lang/String;[B)V", W_load },
     { "loadData", "(I[BLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V", W_loadData },
     { "eval", "(ILjava/lang/String;I)V", W_eval },
@@ -877,6 +884,7 @@ void tl_web_attach(void *screen_view, void *container, float scale, bool fresh)
         g_container = box;
         g_screen = view;
         g_scale = s;
+        for (HuskWeb *h in g_views.allValues) link_host_pans(h);
         set_screen_opaque(atomic_load(&g_visible_webs) == 0);
     };
     if ([NSThread isMainThread]) b(); else dispatch_sync(dispatch_get_main_queue(), b);
@@ -902,6 +910,17 @@ bool tl_web_hit(float x, float y)
     }
     pthread_mutex_unlock(&g_hit_lock);
     return hit;
+}
+
+int tl_web_parent_scroll_axes(float x, float y)
+{
+    int axes = 0;
+    pthread_mutex_lock(&g_hit_lock);
+    for (int i = 0; i < g_nhits; i++) {
+        if (hit_contains(&g_hits[i], x, y)) { axes = g_hits[i].scroll_axes; break; }
+    }
+    pthread_mutex_unlock(&g_hit_lock);
+    return axes;
 }
 
 bool tl_web_any_visible(void) { return atomic_load(&g_visible_webs) > 0; }

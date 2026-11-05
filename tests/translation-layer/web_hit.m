@@ -18,7 +18,7 @@ int main(void)
     array.kind = TL_K_PRIM_ARRAY;
     array.arr.data = bounds;
     array.arr.len = 4;
-    jvalue a[8] = {0}, ret = {0};
+    jvalue a[9] = {0}, ret = {0};
     a[0].i = 1; a[1].i = 0; a[2].i = 120;
     a[3].i = 804; a[4].i = 1600; a[5].i = 1; a[6].i = 1; a[7].l = &array;
     assert(W_frame(NULL, a, &ret));
@@ -26,14 +26,24 @@ int main(void)
     assert(tl_web_hit(150, 80));    /* the rest of the page is interactive */
     assert(tl_web_hit(20, 108));    /* half-open bounds */
     assert(!tl_web_hit(20, 50));    /* outside the page */
+    assert(tl_web_parent_scroll_axes(150, 80) == 0); /* standalone page keeps WebKit scrolling */
+    a[8].i = 2;
+    assert(W_frame(NULL, a, &ret));
+    assert(tl_web_parent_scroll_axes(150, 80) == 2); /* vertical Android list owns vertical drags */
+    assert(tl_web_parent_scroll_axes(20, 80) == 0);  /* an Android control is not a page gesture */
+    assert(tl_web_parent_scroll_axes(20, 50) == 0);
+    a[8].i = 3;
     a[7].l = NULL;
     assert(W_frame(NULL, a, &ret));
     assert(tl_web_hit(20, 80));     /* hidden/removed button no longer blocks */
+    assert(tl_web_parent_scroll_axes(20, 80) == 3);
     a[6].i = 0;
     assert(W_frame(NULL, a, &ret));
     assert(!tl_web_hit(150, 80));   /* another window owns the touch */
+    assert(tl_web_parent_scroll_axes(150, 80) == 0);
     forget_hits(1);
     assert(g_nhits == 0);
-    puts("PASS: Android button exclusion, page taps, scale, boundaries and removal");
+    assert(tl_web_parent_scroll_axes(150, 80) == 0);
+    puts("PASS: Android button exclusion, parent scroll axes, standalone page, scale, boundaries and removal");
     return 0;
 }
