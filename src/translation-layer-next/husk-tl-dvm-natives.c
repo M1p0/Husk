@@ -645,14 +645,7 @@ NAT(Thread_sleep)
 {
     (void)self; (void)ret;
     int64_t ms = a[1].j; int32_t ns = a[2].i;
-    struct timespec ts = { (time_t)(ms / 1000), (long)((ms % 1000) * 1000000 + ns) };
-    while ((ts.tv_sec > 0 || ts.tv_nsec > 0) && !tl_session_stopping()) {
-        long slice = ts.tv_sec > 0 || ts.tv_nsec > 20000000 ? 20000000 : ts.tv_nsec;
-        struct timespec part = { 0, slice }; nanosleep(&part, NULL);
-        if (ts.tv_nsec < slice) { ts.tv_sec--; ts.tv_nsec += 1000000000; }
-        ts.tv_nsec -= slice;
-    }
-    return !tl_session_stopping();
+    return tl_session_sleep(ms, ns);
 }
 NAT(Thread_false) { UNUSED; *ret = Z(false); return true; }
 NAT(Thread_noop) { UNUSED; return true; }
@@ -754,6 +747,22 @@ NAT(Thread_holdsLock)
 }
 
 typedef struct { jobj *thread; } start_arg;
+static void finish_thread(void *context)
+{
+    jobj *t = context;
+    /* the thread is over: no longer alive, and whoever joins it wakes */
+    dvm_field *pf = thread_peer(t);
+    if (pf) dvm_slots(t)[pf->slot].j = 0;
+    dvm_monitor_enter(t);
+    dvm_monitor_notify(t, true);
+    dvm_monitor_exit(t);
+    /* Android's Thread.join() waits on the thread's private lock object, which ART notifies as the thread ends */
+    static dvm_field *lf;
+    if (!lf) { dvm_class *tc = dvm_class_of(dvm_class_named("java/lang/Thread")); lf = tc ? dvm_find_field(tc, "lock", false) : NULL; }
+    jobj *lk = lf ? dvm_slots(t)[lf->slot].l : NULL;
+    if (lk) { dvm_monitor_enter(lk); dvm_monitor_notify(lk, true); dvm_monitor_exit(lk); }
+    tl_session_worker_done();
+}
 static void *thread_main(void *p)
 {
     void tl_thread_altstack(void); tl_thread_altstack();
@@ -762,6 +771,7 @@ static void *thread_main(void *p)
     t_thread_epoch = g_thread_epoch;
     free(s);
     jobj *t = t_thread;
+    pthread_cleanup_push(finish_thread, t);
     jvalue nm; dvm_class *c = dvm_class_of(dvm_object_class(t));
     dvm_field *nf = c ? dvm_find_field(c, "name", false) : NULL;
     if (nf) { nm = t->fields[nf->slot]; const char *n = tl_jni_string(nm.l); if (n) pthread_setname_np(n); }
@@ -790,18 +800,7 @@ static void *thread_main(void *p)
         dvm_method *d = e ? dvm_find_virtual(dvm_object_class(t), "dispatchUncaughtException", "(Ljava/lang/Throwable;)V") : NULL;
         if (d) { jvalue arg; arg.j = 0; arg.l = e; jvalue r2; if (!dvm_call(d, t, &arg, &r2)) tl_jni_set_pending(NULL); }
     }
-    /* the thread is over: no longer alive, and whoever joins it wakes */
-    dvm_field *pf = thread_peer(t);
-    if (pf) dvm_slots(t)[pf->slot].j = 0;
-    dvm_monitor_enter(t);
-    dvm_monitor_notify(t, true);
-    dvm_monitor_exit(t);
-    /* Android's Thread.join() waits on the thread's private lock object, which ART notifies as the thread ends */
-    static dvm_field *lf;
-    if (!lf) { dvm_class *tc = dvm_class_of(dvm_class_named("java/lang/Thread")); lf = tc ? dvm_find_field(tc, "lock", false) : NULL; }
-    jobj *lk = lf ? dvm_slots(t)[lf->slot].l : NULL;
-    if (lk) { dvm_monitor_enter(lk); dvm_monitor_notify(lk, true); dvm_monitor_exit(lk); }
-    tl_session_worker_done();
+    pthread_cleanup_pop(1);
     return NULL;
 }
 NAT(Thread_nativeCreate)

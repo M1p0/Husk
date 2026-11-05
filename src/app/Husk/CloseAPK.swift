@@ -19,11 +19,11 @@ import SwiftUI
         guard stopped else {
             if retry == nil {
                 retry = Task {
-                    while stoppingAPK == apk {
-                        try? await Task.sleep(nanoseconds: 1_000_000_000)
-                        if await close(app) { break }
-                    }
+                    let ready = await Task.detached(priority: .utility) { husk_native_wait_for_close() }.value
                     retry = nil
+                    if ready && stoppingAPK == apk {
+                        _ = await close(app)
+                    }
                 }
             }
             return false

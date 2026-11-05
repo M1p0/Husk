@@ -167,6 +167,8 @@ void husk_native_unload(void);
 /* In-process close for Java apps; false retains the session for a retry. */
 bool husk_native_can_close(void);
 bool husk_native_close(void);
+/* Wait for initialization or outstanding shutdown work to finish, without retry timers. */
+bool husk_native_wait_for_close(void);
 
 /* Whether the running game has no touch controls of its own and wants the on-screen controller (a PC game through DXVK). */
 bool husk_native_wants_controller(void);

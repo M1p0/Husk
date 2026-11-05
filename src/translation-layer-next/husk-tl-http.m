@@ -37,6 +37,8 @@ static void put_message(tl_http_response *out, int error, NSString *text)
     snprintf(out->message, sizeof(out->message), "%s", text.UTF8String ?: "");
 }
 
+static void cancel_request(void *context) { [(__bridge NSURLSessionTask *)context cancel]; }
+
 static bool perform_once(const tl_http_request *req, tl_http_response *out)
 {
     memset(out, 0, sizeof(*out));
@@ -59,10 +61,14 @@ static bool perform_once(const tl_http_request *req, tl_http_response *out)
             data = d; resp = rs; err = e;
             dispatch_semaphore_signal(done);
         }];
-        [task resume];
-        while (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC))) {
-            if (tl_session_stopping()) [task cancel];
+        tl_session_wait wait;
+        bool registered = tl_session_wait_begin(&wait, cancel_request, (__bridge void *)task);
+        if (!registered) {
+            [task cancel]; put_message(out, TL_HTTP_READ, @"APK session stopped"); return false;
         }
+        [task resume];
+        dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+        tl_session_wait_end(&wait);
 
         if (err || ![resp isKindOfClass:[NSHTTPURLResponse class]]) {
             NSInteger code = err.code;

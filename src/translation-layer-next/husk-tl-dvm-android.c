@@ -1169,8 +1169,22 @@ static void stub_lib(const char *name, uint64_t size, void *dir)
     if (stat(p, &st) != 0) { int fd = open(p, O_CREAT | O_WRONLY, 0755); if (fd >= 0) close(fd); }
 }
 
-static void *gl_main(void *arg) { gl_main_body(arg); atomic_store(&A.gl_done, true); return NULL; }
-static void *app_main(void *arg) { app_main_body(arg); atomic_store(&A.app_done, true); return NULL; }
+static void gl_finished(void *unused) { (void)unused; atomic_store(&A.gl_done, true); tl_session_worker_done(); }
+static void app_finished(void *unused) { (void)unused; atomic_store(&A.app_done, true); tl_session_worker_done(); }
+static void *gl_main(void *arg)
+{
+    pthread_cleanup_push(gl_finished, NULL);
+    gl_main_body(arg);
+    pthread_cleanup_pop(1);
+    return NULL;
+}
+static void *app_main(void *arg)
+{
+    pthread_cleanup_push(app_finished, NULL);
+    app_main_body(arg);
+    pthread_cleanup_pop(1);
+    return NULL;
+}
 
 bool tl_javaapp_start(const tl_javaapp_config *cfg)
 {
@@ -1225,9 +1239,20 @@ bool tl_javaapp_start(const tl_javaapp_config *cfg)
     if (!tl_ld_add_apk(cfg->apk_path)) return false;
     if (!tl_dvm_add_apk(cfg->apk_path)) return false;
     { char lib[1100]; snprintf(lib, sizeof(lib), "%s/lib", A.data); mkdir(lib, 0755); tl_ld_apk_libs(stub_lib, lib); }
-    { pthread_attr_t rt; pthread_attr_init(&rt); pthread_attr_setstacksize(&rt, 64u << 20); A.gl_thread_started = pthread_create(&A.gl_thread, &rt, gl_main, NULL) == 0; }
+    {
+        pthread_attr_t rt; pthread_attr_init(&rt); pthread_attr_setstacksize(&rt, 64u << 20);
+        A.gl_thread_started = tl_session_worker_add();
+        if (A.gl_thread_started && pthread_create(&A.gl_thread, &rt, gl_main, NULL) != 0) {
+            A.gl_thread_started = false; tl_session_worker_done();
+        }
+        pthread_attr_destroy(&rt);
+    }
     pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 256u << 20);
-    A.app_started = pthread_create(&A.app_thread, &at, app_main, NULL) == 0;
+    A.app_started = tl_session_worker_add();
+    if (A.app_started && pthread_create(&A.app_thread, &at, app_main, NULL) != 0) {
+        A.app_started = false; tl_session_worker_done();
+    }
+    pthread_attr_destroy(&at);
     return A.app_started;
 }
 
@@ -1236,11 +1261,7 @@ bool tl_javaapp_stop(void)
     tl_session_request_stop();
     atomic_store(&A.ended, true);
     // A native call may be stuck. Keep its DEX alive and report failure instead of hanging Husk or freeing live memory.
-    for (int i = 0; i < 300; i++) {
-        if ((!A.app_started || atomic_load(&A.app_done)) && (!A.gl_thread_started || atomic_load(&A.gl_done)) && tl_session_drained()) break;
-        usleep(10000);
-    }
-    if ((A.app_started && !atomic_load(&A.app_done)) || (A.gl_thread_started && !atomic_load(&A.gl_done)) || !tl_session_drained()) {
+    if (!tl_session_wait_drained(3000)) {
         unsigned calls, workers; tl_session_counts(&calls, &workers);
         tl_log_line("javaapp: stop pending: main=%d GL=%d calls=%u workers=%u; the session is retained",
                     A.app_started && !atomic_load(&A.app_done), A.gl_thread_started && !atomic_load(&A.gl_done), calls, workers);

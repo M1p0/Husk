@@ -77,6 +77,16 @@ static struct {
     int width, height;
 } A;
 
+static pthread_mutex_t state_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t state_changed = PTHREAD_COND_INITIALIZER;
+static void set_state(int state)
+{
+    pthread_mutex_lock(&state_lock);
+    atomic_store(&A.state, state);
+    pthread_cond_broadcast(&state_changed);
+    pthread_mutex_unlock(&state_lock);
+}
+
 /* -------------------------------------------------------------- crash report */
 
 static int find_lib(uintptr_t bias, const char *name, const void *phdr, unsigned phnum, void *user)
@@ -158,7 +168,7 @@ static void install_crash_reporter(void)
 static void guest_exit(int status)
 {
     tl_log_line("native: the game exited (%d)", status);
-    atomic_store(&A.state, HUSK_UNITY_ENDED);
+    set_state(HUSK_UNITY_ENDED);
     pthread_exit(NULL);
 }
 
@@ -320,7 +330,7 @@ static void *launch_thread(void *arg)
         char activity[260];
         if (!manifest_launcher_activity(A.apk, A.package, activity, sizeof(activity))) {
             tl_log_line("sdl: the manifest names no launcher activity");
-            atomic_store(&A.state, HUSK_UNITY_FAILED);
+            set_state(HUSK_UNITY_FAILED);
             return NULL;
         }
         for (int i = 0; i < A.nextra; i++) if (!tl_sdl_add_package(A.extra[i])) tl_log_line("sdl: cannot add %s", A.extra[i]);
@@ -415,19 +425,21 @@ static void *launch_thread(void *arg)
     }
     if (!ok) {
         tl_log_line("native: the game could not be started");
-        atomic_store(&A.state, HUSK_UNITY_FAILED);
+        set_state(HUSK_UNITY_FAILED);
         return NULL;
     }
-    atomic_store(&A.state, HUSK_UNITY_RUNNING);
+    unsigned long generation = atomic_load(&session_generation);
+    bool java_session = A.engine == ENGINE_JAVA;
     pthread_t hb;
-    if (pthread_create(&hb, NULL, heartbeat_thread, (void *)(uintptr_t)atomic_load(&session_generation)) == 0) pthread_detach(hb);
+    if (pthread_create(&hb, NULL, heartbeat_thread, (void *)(uintptr_t)generation) == 0) pthread_detach(hb);
+    set_state(HUSK_UNITY_RUNNING);
     /*
      * This thread loaded the game's libraries and ran their JNI_OnLoad, which on Android is the UI thread, and that thread
      * never ends. Some code relies on it: Geode 5 takes this thread as the game's main thread and keeps thread-local state
      * on it, and ending the thread ran that state's cleanup, which freed what was not its to free and took Husk down
      * (Geometry Dash 2.2081, a SIGTRAP from libmalloc right after the sound started). So it stays, asleep.
      */
-    if (A.engine == ENGINE_JAVA) return NULL;
+    if (java_session) return NULL;
     for (;;) pause();
 }
 
@@ -435,11 +447,18 @@ void husk_native_unload(void)
 {
     int st = atomic_load(&A.state);
     if (st == HUSK_UNITY_IDLE) return;
-    for (int i = 0; i < 200 && atomic_load(&A.state) == HUSK_UNITY_STARTING; i++) usleep(50000);
+    struct timespec until; clock_gettime(CLOCK_REALTIME, &until); until.tv_sec += 10;
+    pthread_mutex_lock(&state_lock);
+    while (atomic_load(&A.state) == HUSK_UNITY_STARTING) {
+        if (pthread_cond_timedwait(&state_changed, &state_lock, &until)) break;
+    }
+    bool starting = atomic_load(&A.state) == HUSK_UNITY_STARTING;
+    pthread_mutex_unlock(&state_lock);
+    if (starting) return;
     st = atomic_load(&A.state);
     if (st == HUSK_UNITY_IDLE) return;
     husk_unity_set_paused(true);
-    if (A.engine == ENGINE_JAVA) atomic_store(&A.state, HUSK_UNITY_STOPPING);
+    if (A.engine == ENGINE_JAVA) set_state(HUSK_UNITY_STOPPING);
     if (A.engine == ENGINE_JAVA && !tl_javaapp_stop()) return;
     else if (A.engine == ENGINE_COCOS) tl_cocos_stop();
     else if (A.engine == ENGINE_GODOT) tl_godot_stop();
@@ -452,7 +471,7 @@ void husk_native_unload(void)
     atomic_fetch_add(&session_generation, 1);
     A.nextra = 0;
     A.apk[0] = 0;
-    atomic_store(&A.state, HUSK_UNITY_IDLE);
+    set_state(HUSK_UNITY_IDLE);
     tl_log_line("native: session cleared; another app can start");
 }
 
@@ -464,10 +483,19 @@ bool husk_native_close(void)
 {
     if (!husk_native_can_close()) return false;
     // Do not race initialization or pretend a hung launch was stopped.
-    for (int i = 0; i < 300 && atomic_load(&A.state) == HUSK_UNITY_STARTING; i++) usleep(10000);
     if (atomic_load(&A.state) == HUSK_UNITY_STARTING) return false;
     husk_native_unload();
     return atomic_load(&A.state) == HUSK_UNITY_IDLE;
+}
+
+bool husk_native_wait_for_close(void)
+{
+    pthread_mutex_lock(&state_lock);
+    while (atomic_load(&A.state) == HUSK_UNITY_STARTING) pthread_cond_wait(&state_changed, &state_lock);
+    bool ok = A.engine == ENGINE_JAVA && atomic_load(&A.state) != HUSK_UNITY_IDLE;
+    pthread_mutex_unlock(&state_lock);
+    if (ok && tl_session_stopping()) ok = tl_session_wait_drained(-1);
+    return ok;
 }
 
 static bool launch(int engine, const char *apk, const char *data_dir, void *metal_layer, int width, int height,
@@ -486,7 +514,8 @@ static bool launch(int engine, const char *apk, const char *data_dir, void *meta
         husk_native_unload();
     }
     if (!atomic_compare_exchange_strong(&A.state, &expected, HUSK_UNITY_STARTING)) return false;
-    if (!tl_session_restart()) { atomic_store(&A.state, HUSK_UNITY_FAILED); return false; }
+    if (!tl_session_restart()) { set_state(HUSK_UNITY_FAILED); return false; }
+    tl_session_set_cancellable(engine == ENGINE_JAVA);
     if (engine == ENGINE_JAVA) {
         // JIT bootstrap reserves a 4 GiB pointer-compression cage for Dart/V8.
         // Flutter also starts through the Java driver, then loads Dart. Keep
@@ -516,7 +545,7 @@ static bool launch(int engine, const char *apk, const char *data_dir, void *meta
     pthread_t t;
     int rc = pthread_create(&t, &at, launch_thread, NULL);
     pthread_attr_destroy(&at);
-    if (rc) { atomic_store(&A.state, HUSK_UNITY_FAILED); return false; }
+    if (rc) { set_state(HUSK_UNITY_FAILED); return false; }
     return true;
 }
 

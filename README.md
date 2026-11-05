@@ -35,6 +35,11 @@ Closing interrupts blocked socket reads, polling and host HTTP requests. If a
 native task still cannot finish, Husk shows a stopping screen and retries cleanup
 automatically; the retained screen cannot be resumed. Other native game engines
 do not yet offer this action.
+Closing wakes blocked network calls, HTTP requests, Java waits, sleeps and class
+initializers through stop events. Idle waits keep their original deadlines;
+there are no periodic shutdown checks or retry timers. Other native engines
+retain their ordinary host I/O waits. Shared wake descriptors are created once,
+before guest code runs, and reused between sessions.
 WebKit completion handlers are canceled before their owners disappear, queued
 UI work from the old session is discarded, and abandoned SQLite connections,
 audio and decoder resources are released after the app's threads have exited.
@@ -43,6 +48,8 @@ and successful runs do not change it. Change the value, then fully reopen Husk
 to allocate a different region. Java runtime code stays resident across APK sessions.
 
 Shutdown gate regression: `sh tests/translation-layer/run_session.sh`.
+This also verifies one host `poll` per idle wait, broadcast cancellation, clean
+restart, unchanged descriptor errors and no drain notifications on normal calls.
 Guest network/HTTP shutdown regression (macOS):
 `sh tests/translation-layer/run_session_io.sh`.
 Full Java bootstrap and real frame-callback reopening regression (macOS):
