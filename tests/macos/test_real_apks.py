@@ -319,7 +319,9 @@ def scenario(run: Run, pika_bundle: Path, jasmine_bundle: Path):
     run.send(jasmine, "native_click", wait=1.2, x=330, y=556)
     run.send(jasmine, "native_text", wait=2, text="husk-local-ui-test")
     typed = run.shot(jasmine, "unsubmitted-account-text-after-other-process-crash")
-    run.send(jasmine, "tap", wait=2, x=500, y=708)  # dialog's Cancel; never Save/Submit
+    # Verified from the real 720x1280 window: Cancel is the LEFT action.
+    # x=500 hits Confirm and would persist the dummy username locally.
+    run.send(jasmine, "native_click", wait=2, x=310, y=758)
     cancelled = run.shot(jasmine, "cancelled-account-text-after-other-process-crash")
     survivor_after = run.version(jasmine, run.v2)
     check(survivor_after["pid"] == survivor_before["pid"]

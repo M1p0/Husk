@@ -121,6 +121,8 @@ ABI 使用 `struct_size` 和独立版本号协商，字符串在 start/configure
 
 APK 明确调用 `exit(status)` 时，独立应用 profile 直接按该状态结束本进程，不先取消其他工作线程。这样保留 APK 的退出语义，避免本已请求 `exit(0)` 的 Flutter 窗口因宿主先取消 Go 数据库 I/O，又被后台 panic 改成 `exit(2)`。普通 Activity.finish 和窗口关闭仍可走宿主的清理路径。
 
+普通窗口关闭时，本 profile 在停止阶段也不向原生文件 I/O 注入 `ECANCELED`，避免 Go/SQLite 把人为取消当成数据库故障并 panic。Java 入口和事件循环仍进入停止阶段；三秒内未收拢的原生工作保留到进程退出，由内核回收。宿主不复用进程、不卸载存活映像，也不能在进程结束前假定这些资源已归还。纯 Java/WebKit fixture 的两次内部收拢与大型 APK 的进程结束分别验收，具体结果见[验收记录](13-macos-release-validation.md)。
+
 所有本地验证的日志、截图、APK 快照、harness、编译中间文件与暂存发布目录都在 `/Users/m1p0/Developer/temp/codex/Husk/<任务名>-<随机标识>/`，由 `tools/task_paths.py` 统一管理并向子进程传递临时/缓存目录。正式源码、回归工具、安装后的 `.app` 和发布后的完整 Runtime 保留在项目约定位置。运行时的临时文件、匿名共享内存和 Unix socket 映射尊重显式临时目录；非法目录失败，不再回退到 `/tmp`。
 
 未来 iOS 复用 APK/DEX/ELF、Bionic/JNI、Java 框架、启动 ABI、完整版本清单、持有协议和验收场景；替换 AppKit 窗口/输入、系统注册/容器、签名/JIT、权限/后台及资源限制适配。macOS `.dylib` 和 ANGLE 必须重新编译成正确的 iOS 目标，不能直接拷贝。当前 Mac adapter 有明确平台编译约束；移植工作集中在宿主适配和实机能力验证。

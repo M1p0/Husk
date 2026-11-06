@@ -1,6 +1,6 @@
 # 独立 APK App 执行方案
 
-状态：**macOS 先行的设计与执行计划。M1 bootstrap 已验证，现已实现 app profile、稳定 APK 启动接口、独立 `.app` 安装器与 AppKit 系统桥接，正在进行真实双 APK 与版本切换验收。资源强制执行、系统沙箱、自动 GC 和 iOS 设备能力仍未交付。**
+状态：**macOS 先行的设计与执行计划。M1 bootstrap 已验证；app profile、稳定 APK 启动接口、图形安装器与独立 `.app` 已实现，有限双 APK 的真实窗口、非合作进程终止隔离、版本切换、后台和三次冷启动验收已通过，详见[实测记录](13-macos-release-validation.md)。资源强制执行、系统沙箱、自动 GC 和 iOS 设备能力仍未交付。**
 
 编写日期：2026-11-06。源码核查基线：`fcda33e2ee6c63ad2742199016d49bcad2730672`。
 架构约束以[独立 App 运行时设计](07-independent-app-runtime-design.md)为准。

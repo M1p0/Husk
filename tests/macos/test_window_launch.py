@@ -205,7 +205,7 @@ def main():
     parser.add_argument("--out", type=Path, required=True, help="new directory inside the current task's evidence directory")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--expect-top-rgb", help="six hex digits; require at least 70 percent of the content top strip")
-    parser.add_argument("--rgb-tolerance", type=int, default=12, help="allowed absolute difference per stored RGB channel")
+    parser.add_argument("--rgb-tolerance", type=int, default=12, help="allowed absolute difference per sRGB channel")
     parser.add_argument("--no-activate", action="store_true")
     args = parser.parse_args()
     task = task_directory(label="macos-window-launch")
@@ -296,7 +296,22 @@ def main():
                     record["capture_status"] = status
                     record["window_path"] = str(image)
                     record["window_sha256"] = sha256(image)
-                    record["top_strip"] = top_strip(image, config, expected, args.rgb_tolerance)
+                    # WindowServer embeds the display's ICC profile. A raw
+                    # display RGB triplet is not the Flutter sRGB color: e.g.
+                    # f48fb1 can be stored as e38ba7 on this display. Keep the
+                    # original capture intact and use macOS ColorSync for the
+                    # numeric comparison, without loosening the threshold.
+                    profile = Path("/System/Library/ColorSync/Profiles/sRGB Profile.icc")
+                    normalized = case / "window.srgb.png"
+                    conversion = subprocess.run(["sips", "--matchTo", str(profile), str(image), "--out", str(normalized)],
+                                                capture_output=True, text=True, timeout=15, env=child_environment)
+                    (case / "colorsync.log").write_text(conversion.stdout + conversion.stderr)
+                    if conversion.returncode or not normalized.is_file():
+                        raise RuntimeError("unable to convert the window capture's embedded color profile to sRGB")
+                    record["srgb_normalization"] = {"profile": str(profile), "profile_sha256": sha256(profile),
+                                                     "image": str(normalized), "sha256": sha256(normalized)}
+                    record["top_strip"] = top_strip(normalized, config, expected, args.rgb_tolerance)
+                    record["top_strip"]["color_space_comparison"] = "sRGB after macOS ColorSync conversion of the capture's embedded profile"
                     if expected and record["top_strip"]["matched_ratio"] < .70:
                         raise AssertionError(f"Account header not visible without input: {record['top_strip']}")
                     record["passed"] = True
