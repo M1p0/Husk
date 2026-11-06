@@ -52,6 +52,8 @@ This also verifies one host `poll` per idle wait, broadcast cancellation, clean
 restart, unchanged descriptor errors and no drain notifications on normal calls.
 Guest network/HTTP shutdown regression (macOS):
 `sh tests/translation-layer/run_session_io.sh`.
+Raw Linux directory reading and bundled CA certificate regression (macOS):
+`sh tests/translation-layer/run_getdents64.sh`.
 Full Java bootstrap and real frame-callback reopening regression (macOS):
 `sh tests/translation-layer/run_reopen_boot.sh`.
 WebKit pending-completion/session isolation regression (macOS):

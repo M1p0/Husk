@@ -641,11 +641,15 @@ static int b_open(const char *path, int flags, unsigned mode)
 }
 static int b___open_2(const char *path, int flags) { return b_open(path, flags, 0); }
 static bool net_trace_fd(int fd);
+static void raw_dir_closed(int fd);
+static void raw_dir_duplicated(int fd, int copy);
+static bool raw_dir_seek(int fd, long off, int whence, long *result);
 /* eventfds are pipes whose read end is the descriptor the guest holds: writes to it go to the other end, and closing it closes both */
 static int g_evfd_peer[1024];
 void tl_eventfd_register(int rd, int wr) { if (rd >= 0 && rd < 1024) g_evfd_peer[rd] = wr + 1; }
 static int evfd_peer(int fd) { return fd >= 0 && fd < 1024 ? g_evfd_peer[fd] - 1 : -1; }
 static int b_close(int fd) {
+    raw_dir_closed(fd);
     if (husk_binder_is_fd(fd)) husk_binder_close(fd);
     if (evfd_peer(fd) >= 0) { close(evfd_peer(fd)); g_evfd_peer[fd] = 0; }
     if (vfd_is(fd)) g_vfd[fd].on = false;
@@ -742,6 +746,8 @@ static long b___pread64_chk(int fd, void *p, size_t n, long off, size_t bufsz)
 }
 static long b_lseek(int fd, long off, int whence)
 {
+    long directory_offset;
+    if (raw_dir_seek(fd, off, whence, &directory_offset)) return directory_offset;
     if (vfd_is(fd)) {
         vfd *v = &g_vfd[fd];
         int64_t np = whence == 0 ? off : whence == 1 ? (int64_t)v->pos + off : (int64_t)v->size + off;
@@ -751,10 +757,10 @@ static long b_lseek(int fd, long off, int whence)
     }
     TL_ERRNO_BEGIN(); long r = lseek(fd, off, whence); TL_ERRNO_END(); return r;
 }
-static int b_dup(int fd) { TL_ERRNO_BEGIN(); int r = dup(fd); TL_ERRNO_END(); return r; }
+static int b_dup(int fd) { TL_ERRNO_BEGIN(); int r = dup(fd); TL_ERRNO_END(); if (r >= 0) raw_dir_duplicated(fd, r); return r; }
 /* The host's stdin/stdout/stderr stay the host's: apps that send stdout/stderr to logcat dup2 a pipe over them (Waze), which
  * would swallow Husk's own log. The redirect is reported done; their pipe simply stays empty. */
-static int b_dup2(int a, int b) { if (b >= 0 && b <= 2 && a != b) return b; TL_ERRNO_BEGIN(); int r = dup2(a, b); if (r >= 0 && a != b) tl_atomic_closed(b); TL_ERRNO_END(); return r; }
+static int b_dup2(int a, int b) { if (b >= 0 && b <= 2 && a != b) return b; TL_ERRNO_BEGIN(); int r = dup2(a, b); if (r >= 0 && a != b) { tl_atomic_closed(b); raw_dir_duplicated(a, b); } TL_ERRNO_END(); return r; }
 static int b_pipe(int fds[2]) { TL_ERRNO_BEGIN(); int r = pipe(fds); TL_ERRNO_END(); return r; }
 static int b_fsync(int fd) { TL_ERRNO_BEGIN(); int r = fsync(fd); TL_ERRNO_END(); return r; }
 static int b_ftruncate(int fd, long n) { TL_ERRNO_BEGIN(); int r = ftruncate(fd, n); TL_ERRNO_END(); return r; }
@@ -961,6 +967,7 @@ static int b_fcntl(int fd, int cmd, long arg)
     default: errno = EINVAL; r = -1; break;
     }
     TL_ERRNO_END();
+    if (r >= 0 && (cmd == 0 || cmd == 1030)) raw_dir_duplicated(fd, r);
     return r;
 }
 
@@ -1019,6 +1026,134 @@ static int b_ioctl(int fd, unsigned long req, long arg)
 
 typedef struct { uint64_t d_ino; int64_t d_off; uint16_t d_reclen; uint8_t d_type; char d_name[256]; } guest_dirent;
 typedef struct { DIR *dir; guest_dirent ent; char **names; uint8_t *types; size_t n, pos; } guest_dir;
+
+/* Go reads directories through getdents64, without libc's readdir. Darwin's
+ * dirent has a different name offset and its kernel rejects small buffers.
+ * Keep a host DIR until the guest closes its descriptor, so a short guest
+ * buffer never loses entries already read into libc's buffer. Duplicates share
+ * the stream; guest d_off values are opaque entry positions, also used by lseek.
+ * The extra host descriptor belongs to the stream, never to the guest. */
+typedef struct { DIR *dir; long pos; size_t refs; } raw_dir_state;
+typedef struct raw_dir_fd { int fd; raw_dir_state *state; struct raw_dir_fd *next; } raw_dir_fd;
+static raw_dir_fd *g_raw_dirs;
+static pthread_mutex_t g_raw_dirs_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* All raw_dir helpers below hold g_raw_dirs_lock. */
+static raw_dir_state *raw_dir_get(int fd, bool create)
+{
+    for (raw_dir_fd *f = g_raw_dirs; f; f = f->next) if (f->fd == fd) return f->state;
+    if (!create) return NULL;
+    struct stat st;
+    if (fstat(fd, &st)) return NULL;
+    if (!S_ISDIR(st.st_mode)) { errno = ENOTDIR; return NULL; }
+    raw_dir_state *s = calloc(1, sizeof(*s));
+    raw_dir_fd *f = malloc(sizeof(*f));
+    if (!s || !f) { free(s); free(f); errno = ENOMEM; return NULL; }
+    int copy = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+    if (copy >= 0) s->dir = fdopendir(copy);
+    if (!s->dir) {
+        int error = errno;
+        if (copy >= 0) close(copy);
+        free(s); free(f); errno = error;
+        return NULL;
+    }
+    s->refs = 1;
+    *f = (raw_dir_fd){ fd, s, g_raw_dirs }; g_raw_dirs = f;
+    return s;
+}
+
+static void raw_dir_drop(int fd)
+{
+    raw_dir_fd **p = &g_raw_dirs;
+    while (*p && (*p)->fd != fd) p = &(*p)->next;
+    if (!*p) return;
+    raw_dir_fd *f = *p; *p = f->next;
+    if (--f->state->refs == 0) { closedir(f->state->dir); free(f->state); }
+    free(f);
+}
+
+static void raw_dir_closed(int fd)
+{
+    int saved = errno;
+    pthread_mutex_lock(&g_raw_dirs_lock);
+    raw_dir_drop(fd);
+    pthread_mutex_unlock(&g_raw_dirs_lock);
+    errno = saved;
+}
+
+static void raw_dir_duplicated(int fd, int copy)
+{
+    int saved = errno;
+    pthread_mutex_lock(&g_raw_dirs_lock);
+    raw_dir_drop(copy);
+    raw_dir_state *s = raw_dir_get(fd, true);
+    if (s) {
+        raw_dir_fd *f = malloc(sizeof(*f));
+        if (f) { *f = (raw_dir_fd){ copy, s, g_raw_dirs }; g_raw_dirs = f; s->refs++; }
+    }
+    pthread_mutex_unlock(&g_raw_dirs_lock);
+    errno = saved;
+}
+
+static bool raw_dir_seek(int fd, long off, int whence, long *result)
+{
+    pthread_mutex_lock(&g_raw_dirs_lock);
+    raw_dir_state *s = raw_dir_get(fd, false);
+    if (!s) { pthread_mutex_unlock(&g_raw_dirs_lock); return false; }
+    int error = 0;
+    if (whence == SEEK_CUR && off == 0) { *result = s->pos; }
+    else if (whence == SEEK_SET && off >= 0) {
+        long before = telldir(s->dir), old_pos = s->pos;
+        if (before < 0) error = errno ? errno : ENOMEM;
+        else {
+            rewinddir(s->dir); s->pos = 0;
+            while (s->pos < off) {
+                errno = 0;
+                if (!readdir(s->dir)) { error = errno ? errno : EINVAL; break; }
+                s->pos++;
+            }
+            if (error) { seekdir(s->dir, before); s->pos = old_pos; }
+            else *result = s->pos;
+        }
+    } else error = EINVAL;
+    pthread_mutex_unlock(&g_raw_dirs_lock);
+    if (error) { tl_set_guest_errno(tl_errno_to_guest(error)); *result = -1; }
+    return true;
+}
+
+static long b_getdents64(int fd, void *buffer, size_t count)
+{
+    pthread_mutex_lock(&g_raw_dirs_lock);
+    errno = 0;
+    raw_dir_state *s = raw_dir_get(fd, true);
+    size_t used = 0;
+    int error = s ? 0 : errno;
+    if (!error && count < 24) error = EINVAL;
+    if (!error && !buffer) error = EFAULT;
+    while (!error && count - used >= 24) {
+        /* Only remember a position when the next entry might not fit. */
+        bool may_overflow = count - used < ((19 + sizeof(((struct dirent *)0)->d_name) + 7) & ~(size_t)7);
+        long before = may_overflow ? telldir(s->dir) : 0;
+        if (before < 0) { error = errno ? errno : ENOMEM; break; }
+        errno = 0;
+        struct dirent *e = readdir(s->dir);
+        if (!e) { error = errno; break; }
+        size_t len = strlen(e->d_name), size = (19 + len + 1 + 7) & ~(size_t)7;
+        if (size > count - used) { seekdir(s->dir, before); if (!used) error = EINVAL; break; }
+        uint8_t *out = (uint8_t *)buffer + used;
+        uint64_t ino = e->d_ino;
+        int64_t next = ++s->pos;
+        uint16_t reclen = (uint16_t)size;
+        memset(out, 0, size);
+        memcpy(out, &ino, 8); memcpy(out + 8, &next, 8); memcpy(out + 16, &reclen, 2);
+        out[18] = e->d_type;
+        memcpy(out + 19, e->d_name, len + 1);
+        used += size;
+    }
+    pthread_mutex_unlock(&g_raw_dirs_lock);
+    if (error && !used) { tl_set_guest_errno(tl_errno_to_guest(error)); return -1; }
+    return (long)used;
+}
 
 /* A folder inside an APK ("jar:file:///.../base.apk!/assets"), listed from the zip: what is directly in it, files and folders.
  * Unity 6 lists its StreamingAssets this way through System.IO (Wordscapes boots from it). */
@@ -1978,7 +2113,7 @@ static long linux_syscall_impl(long a0, long a1, long a2, long a3, long a4, long
         char buf[1024]; const char *p = tl_path_resolve((const char *)a1, buf, sizeof(buf));
         return access(p, (int)a2) ? -tl_errno_to_guest(errno) : 0;
     }
-    case 62: { off_t r = lseek((int)a0, (off_t)a1, (int)a2); return r < 0 ? -tl_errno_to_guest(errno) : (long)r; }
+    case 62: { long r = b_lseek((int)a0, a1, (int)a2); return r < 0 ? -*tl_guest_errno_ptr() : r; }
     case 101: { int r = nanosleep((const struct timespec *)a0, (struct timespec *)a1); return r < 0 ? -tl_errno_to_guest(errno) : 0; }
     case 124: sched_yield(); return 0;
     case 132: return 0;                                                                 /* sigaltstack: accepted (guest handlers are not installed) */
@@ -2105,6 +2240,7 @@ const tl_bionic_entry tl_tab_io[] = {
     TL_WRAP("stat", b_stat), TL_WRAP("fstatat", b_fstatat), TL_WRAP("fstatat64", b_fstatat), TL_WRAP("lstat", b_lstat), TL_WRAP("fstat", b_fstat), TL_WRAP("lstat64", b_lstat), TL_WRAP("fstat64", b_fstat), TL_WRAP("statfs", b_statfs), TL_WRAP("statfs64", b_statfs), TL_WRAP("fstatfs", b_fstatfs), TL_WRAP("fstatfs64", b_fstatfs),
     TL_WRAP("fcntl", b_fcntl), TL_WRAP("ioctl", b_ioctl),
     TL_WRAP("scandir", b_scandir), TL_WRAP("alphasort", b_alphasort), TL_WRAP("versionsort", b_alphasort), TL_WRAP("opendir", b_opendir), TL_WRAP("fdopendir", b_fdopendir), TL_WRAP("dirfd", b_dirfd), TL_WRAP("rewinddir", b_rewinddir), TL_WRAP("readdir", b_readdir), TL_WRAP("closedir", b_closedir),
+    TL_WRAP("getdents64", b_getdents64), TL_WRAP("__getdents64", b_getdents64),
     TL_WRAP("mmap", b_mmap), TL_WRAP("mmap64", b_mmap), TL_WRAP("readdir64", b_readdir), TL_WRAP("munmap", b_munmap), TL_WRAP("mprotect", b_mprotect), TL_WRAP("madvise", b_madvise),
     TL_WRAP("mremap", b_mremap),
     TL_WRAP("clock_gettime", b_clock_gettime), TL_WRAP("clock_getres", b_clock_getres), TL_WRAP("gettimeofday", b_gettimeofday),
