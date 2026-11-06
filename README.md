@@ -143,13 +143,8 @@ On a Mac with Xcode, plus `meson`, `ninja`, `pkg-config`, `python3`, `xcodegen`,
 
 That produces `build/Husk.ipa`. Later app-only rebuilds: `./scripts/package_ipa.sh` → `~/Desktop/Husk.ipa`.
 
-## Builds
-
-Every push builds an unsigned `Husk.ipa` in GitHub Actions
-([build-ipa.yml](.github/workflows/build-ipa.yml)). It is attached to the run
-as an artifact, ready for AltStore, SideStore or TrollStore to sign and
-install. The first run builds QEMU and its dependencies from scratch, which
-takes a couple of hours; after that they are cached.
+This fork uses manual local builds and tests. GitHub Actions is disabled;
+there is no automatic build or deployment on push.
 
 ## Licence
 
