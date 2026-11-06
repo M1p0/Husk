@@ -90,6 +90,19 @@ String allocation fault injection: `sh tests/translation-layer/run_string_oom.sh
 - **Emulation** — a full LineageOS guest under QEMU, for apps the translation layer cannot run yet.
 - **PS4** — fake packages and game folders on iOS 17.4+.
 
+## Independent APK apps: proposed design
+
+The proposed jailbreak architecture gives each APK its own iOS app identity and
+process, with a versioned Husk runtime loaded at process startup. This is a
+design and execution plan; the independent-app runtime, resource controls and
+target-device validation are not implemented by these documents.
+Development starts with a macOS prototype of the shared core and protocols;
+iOS-specific registration, sandboxing, JIT, memory and background behavior still
+require separate target-device validation.
+
+- [架构与设计：独立应用、资源隔离及运行库升级](docs/07-independent-app-runtime-design.md)
+- [执行方案：能力探针、分阶段实现与验收](docs/08-independent-app-runtime-execution-plan.md)
+
 ## Install
 
 Sideload with SideStore, AltStore, or TrollStore. iOS 15.5 or later.

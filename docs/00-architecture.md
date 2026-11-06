@@ -1,5 +1,11 @@
 # Husk architecture
 
+> Historical scope: this document describes the early QEMU host architecture.
+> The proposed independent iOS apps and shared runtime architecture is documented
+> in [07-independent-app-runtime-design.md](07-independent-app-runtime-design.md),
+> with its [execution plan](08-independent-app-runtime-execution-plan.md).
+> Those documents describe future work, not a completed migration.
+
 Husk runs unmodified Android APKs on iOS by booting a real ARM64 Android guest
 under QEMU's TCG, inside the host app's own process, and presenting one app's
 rendered surface full-screen with no Android chrome visible.
