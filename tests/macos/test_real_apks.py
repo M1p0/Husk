@@ -25,7 +25,10 @@ import subprocess
 import sys
 import time
 
+sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from task_paths import task_directory, temporary_path
 SPEC = importlib.util.spec_from_file_location("husk_real_apk_acceptance", ROOT / "tools/macos/acceptance.py")
 acceptance = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(acceptance)
@@ -79,6 +82,8 @@ class Run:
         self.deadline = time.monotonic() + 600
         self.apps = []
         self.report = {"schema": 1, "scope": "real installed APK AppKit acceptance",
+                       "task_directory": str(task_directory()),
+                       "temporary_environment": {key: os.environ.get(key) for key in ["TMPDIR", "TMP", "TEMP"]},
                        "started_utc": datetime.now(timezone.utc).isoformat(),
                        "runtime_v1": str(v1), "runtime_v2": str(v2),
                        "launch_runtime_override": False, "visual_review": "required for every window capture",
@@ -255,7 +260,9 @@ def scenario(run: Run, pika_bundle: Path, jasmine_bundle: Path):
         run.send(pika_first, "tap", wait=.8, x=x, y=y)
     run.wait(2, pika_first)
     run.shot(pika_first, "activation-tips-before-own-close")
-    pika_first.send({"action": "tap", "x": 360, "y": 640})
+    # Verified in the actual 720x1280/density-2 window: the centered body
+    # button sits below the 56dp AppBar, at surface y=696.
+    pika_first.send({"action": "tap", "x": 360, "y": 696})
     pika_first.process.wait(timeout=run.remaining(20))
     check(pika_first.process.returncode == 0, "Pikapika Tips Close did not produce the verified app-owned exit 0")
     pika_first.log.close()
@@ -332,9 +339,10 @@ def main():
     parser.add_argument("--runtime-v2", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
+    task_directory(label="macos-real-apks")
     pika, jasmine, v1, v2 = [path.resolve(strict=True) for path in [args.pika, args.jasmine, args.runtime_v1, args.runtime_v2]]
     check(v1 != v2 and v1.parent == v2.parent, "two distinct versions in one Runtime store are required")
-    output = args.out.resolve()
+    output = temporary_path(args.out)
     check(all(output != path and path not in output.parents and output not in path.parents
               for path in [pika, jasmine, v1, v2]), "output cannot overlap an installed app or Runtime version")
     output.mkdir(parents=True, mode=0o700, exist_ok=False)

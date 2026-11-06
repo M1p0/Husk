@@ -269,8 +269,8 @@ static void concurrent_configure_test(void)
 
 int main(int argc, char **argv)
 {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s /absolute/path/to/Runtime.dylib\n", argv[0]);
+    if (argc != 2 && !(argc == 3 && !strcmp(argv[2], "--app-profile"))) {
+        fprintf(stderr, "usage: %s /absolute/path/to/Runtime.dylib [--app-profile]\n", argv[0]);
         return 2;
     }
     void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -294,11 +294,14 @@ int main(int argc, char **argv)
     REQUIRE(info->build_id && info->build_id[0]);
     REQUIRE(!strcmp(info->host_target, "macos-arm64"));
     REQUIRE((info->capabilities & HUSK_RUNTIME_CAP_NATIVE_CORE_LINKED) != 0);
-    REQUIRE((info->capabilities & HUSK_RUNTIME_CAP_APK_LAUNCH) == 0);
+    REQUIRE(!!(info->capabilities & HUSK_RUNTIME_CAP_APK_LAUNCH) == (argc == 3));
     REQUIRE(info->hard_memory_limit_state == HUSK_RUNTIME_CAPABILITY_UNSUPPORTED);
-    puts("PASS: dynamic entry point, ABI negotiation and truthful M1 capabilities");
+    puts("PASS: dynamic entry point, ABI negotiation and profile capabilities");
 
-    strcpy(g_root, "/tmp/husk-runtime-context-XXXXXX");
+    const char *temporary = getenv("TMPDIR");
+    REQUIRE(temporary && !strncmp(temporary, "/Users/m1p0/Developer/temp/", sizeof("/Users/m1p0/Developer/temp/") - 1));
+    int root_length = snprintf(g_root, sizeof(g_root), "%s/husk-runtime-context-XXXXXX", temporary);
+    REQUIRE(root_length > 0 && (size_t)root_length < sizeof(g_root));
     REQUIRE(mkdtemp(g_root) != NULL);
     REQUIRE(atexit(cleanup) == 0);
     const char *names[] = { "runtime", "package", "data", "cache", "config" };

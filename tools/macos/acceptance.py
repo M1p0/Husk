@@ -16,7 +16,13 @@ import plistlib
 import resource
 import signal
 import subprocess
+import sys
 import time
+
+sys.dont_write_bytecode = True
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from task_paths import task_directory, temporary_path
 
 
 def read_json(path: Path) -> dict:
@@ -28,6 +34,10 @@ def read_json(path: Path) -> dict:
 
 class App:
     def __init__(self, bundle: Path, output: Path, runtime: Path | None = None, state: Path | None = None):
+        task_directory(label="macos-acceptance")
+        output = temporary_path(output)
+        if state is not None:
+            state = temporary_path(state)
         self.bundle = bundle.resolve(strict=True)
         self.output = output
         self.state = state if state is not None else output / "state"
@@ -127,7 +137,8 @@ def main():
     parser.add_argument("--scenario-a", type=Path)
     parser.add_argument("--scenario-b", type=Path)
     args = parser.parse_args()
-    output = args.out.absolute()
+    task_directory(label="macos-acceptance")
+    output = temporary_path(args.out)
     output.mkdir(parents=True, exist_ok=False)
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     apps = []

@@ -25,6 +25,8 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from task_paths import task_directory, staging_directory, temporary_path
 TARGET = "macos-arm64"
 LIBRARY = "lib/libHuskRuntime.dylib"
 PROFILE = "headless-bootstrap"
@@ -86,7 +88,7 @@ def source_snapshot() -> tuple[list[Path], tuple[Path, ...], str]:
     """
     sources = source_files()
     inputs = set([*sources, Path(__file__).resolve(),
-                  ROOT / "scripts/build_macos_runtime.sh"])
+                  ROOT / "scripts/build_macos_runtime.sh", ROOT / "tools/task_paths.py"])
     for directory in (ROOT / "src/translation-layer", ROOT / "src/translation-layer-next",
                       ROOT / "src/runtime", ROOT / "src/runtime-api"):
         inputs.update(directory.rglob("*.h"))
@@ -127,6 +129,7 @@ def make_readonly(directory: Path) -> None:
 
 
 def discard_staging(directory: Path) -> None:
+    directory = temporary_path(directory)
     if not directory.exists():
         return
     directory.chmod(0o700)
@@ -239,6 +242,7 @@ def arguments() -> argparse.Namespace:
 
 
 def main() -> int:
+    task_directory("runtime-build")
     options = arguments()
     if sys.platform != "darwin" or platform.machine() != "arm64":
         raise ValueError("this build target requires native Apple Silicon macOS")
@@ -280,7 +284,7 @@ def main() -> int:
     lease = leases / (build_id + ".lock")
     if os.path.lexists(lease):
         raise FileExistsError(errno.EEXIST, "version lease already exists; choose a new build ID", str(lease))
-    staging = Path(tempfile.mkdtemp(prefix=f".staging-{build_id}-", dir=store))
+    staging = Path(tempfile.mkdtemp(prefix=f"runtime-{build_id}-", dir=staging_directory(store)))
     try:
         print(f"Building {build_id}: {len(sources)} real Runtime source files", flush=True)
         build_library(staging, build_id, sources, options.profile)

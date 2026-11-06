@@ -10,6 +10,7 @@
  * TL_HTTP_LEGACY overrides the legacy HTTP boot jar; TL_FRAMEDIR selects a host-owned frame directory.
  */
 #include <mach/mach.h>
+#include <limits.h>
 #include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
@@ -144,6 +145,26 @@ static void dump_stacks(void)
 }
 
 static const char *g_frame_dir;
+/* The Python runners export this task root. Check explicit output overrides too,
+ * including their existing ancestor so a symlink cannot silently leave it. */
+static bool task_output(const char *path)
+{
+    const char *task = getenv("HUSK_TASK_TMPDIR");
+    if (!task) return path && path[0] == '/';
+    if (!path || path[0] != '/') return false;
+    char root[PATH_MAX], candidate[PATH_MAX], ancestor[PATH_MAX];
+    if (!realpath(task, root) || strlen(path) >= sizeof(candidate)) return false;
+    snprintf(candidate, sizeof(candidate), "%s", path);
+    for (const char *p = candidate; *p; p++)
+        if (*p == '/' && p[1] == '.' && p[2] == '.' && (p[3] == '/' || !p[3])) return false;
+    while (!realpath(candidate, ancestor)) {
+        char *slash = strrchr(candidate, '/');
+        if (!slash || slash == candidate) return false;
+        *slash = 0;
+    }
+    size_t length = strlen(root);
+    return !strncmp(ancestor, root, length) && (ancestor[length] == '/' || !ancestor[length]);
+}
 bool tl_web_tap(float px, float py);
 void tl_web_snapshot(const char *png);
 void tl_web_eval_log(const char *js);
@@ -177,6 +198,7 @@ static void *control_thread(void *arg)
             else if (sscanf(line, "swipe %f %f %f %f %ld", &a, &b, &c, &d, &ms) == 5) do_swipe(a, b, c, d, ms);
             else if (sscanf(line, "wait %ld", &ms) == 1) sleep_ms(ms);
             else if (sscanf(line, "shot %399s", p) == 1) {
+                if (!task_output(p)) { fprintf(stderr, "ctl: screenshot must stay in the current task directory\n"); continue; }
                 /* posix_spawn and a bounded wait for that child: system() waits forever when the app reaps children itself */
                 char bmp[700]; snprintf(bmp, sizeof(bmp), "%s/latest.bmp", g_frame_dir);
                 char *sargv[] = { "/usr/bin/sips", "-s", "format", "png", bmp, "--out", p, NULL };
@@ -251,8 +273,12 @@ static void *run(void *p)
     { void tl_set_system_fonts_dir(const char *); tl_set_system_fonts_dir(getenv("TL_SYSFONTS") ? getenv("TL_SYSFONTS") : "/Volumes/GTAV/husk2/root/system"); }
     { void tl_set_cacerts_dir(const char *); static char d[800]; snprintf(d, sizeof(d), "%s/../com.android.conscrypt/cacerts", art); tl_set_cacerts_dir(d); }   /* the trusted roots, as the app ships them */
     { char d[800]; snprintf(d, sizeof(d), "%s/lib64", art); tl_dvm_load_natives(d); }
-    /* scratch (data, frames) under TL_TMP: by default the work folder on the big drive, not the GTAV drive, which drops under load */
-    const char *scratch = getenv("TL_TMP") ? getenv("TL_TMP") : "/Users/davi/husk-work/tmp";
+    /* Harness data and captures stay in the caller's explicit task scratch directory. */
+    const char *scratch = getenv("TL_TMP") ? getenv("TL_TMP") : getenv("TMPDIR");
+    if (!task_output(scratch) || (getenv("TL_DATA") && !task_output(getenv("TL_DATA")))
+        || (getenv("TL_FRAMEDIR") && !task_output(getenv("TL_FRAMEDIR")))) {
+        fprintf(stderr, "TL_TMP/TMPDIR, TL_DATA and TL_FRAMEDIR must stay in the current task directory\n"); _exit(2);
+    }
     char tmp[600]; snprintf(tmp, sizeof(tmp), "%s/husk-javaapp-XXXXXX", scratch);
     if (getenv("TL_DATA")) { snprintf(tmp, sizeof(tmp), "%s", getenv("TL_DATA")); mkdir(tmp, 0755); } else mkdtemp(tmp);
     const char *cef = "/Users/davi/Library/Application Support/Steam/Steam.AppBundle/Steam/Contents/MacOS/Frameworks/Chromium Embedded Framework.framework/Versions/A/Libraries";

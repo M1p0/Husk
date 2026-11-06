@@ -11,8 +11,11 @@ import shutil
 import subprocess
 import tempfile
 import time
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from task_paths import task_directory
 
 
 def checked(args, **kwargs):
@@ -47,7 +50,7 @@ def main():
                         help="copy two existing bundles into an isolated test store instead of rebuilding")
     options = parser.parse_args()
     processes = []
-    with tempfile.TemporaryDirectory(prefix="husk-runtime-m1-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="husk-runtime-m1-", dir=task_directory("runtime-tests") / "tmp") as temporary:
         work = Path(temporary).resolve()
         store = work / "store"
         store.mkdir()
@@ -75,7 +78,10 @@ def main():
             checked(["clang", "-std=c11", "-Wall", "-Wextra", "-Werror",
                      "-I" + str(ROOT / "src/runtime-api"),
                      ROOT / "tests/runtime/context_api_test.c", "-o", api_test])
-            result = checked([api_test, a / "lib/libHuskRuntime.dylib"], timeout=15)
+            api_arguments = [api_test, a / "lib/libHuskRuntime.dylib"]
+            if json.loads((a / "manifest.json").read_text())["profile"] == "macos-app":
+                api_arguments.append("--app-profile")
+            result = checked(api_arguments, timeout=15)
             print(result.stdout.strip())
             app_test = work / "app-api-test"
             checked(["clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror",
@@ -244,7 +250,7 @@ def main():
 
             info = run(name="final-valid")
             assert info["build_id"] == a.name and exclusive_available(lock_a)
-            print("PASS: headless-bootstrap M1 checks complete; no APK, sandbox, JIT execution or hard-memory guarantee is claimed")
+            print("PASS: bootstrap/ABI checks complete; APK UI, sandbox and hard-memory guarantees require separate acceptance")
         finally:
             for process in processes:
                 if process.poll() is None:

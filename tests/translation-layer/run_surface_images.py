@@ -15,9 +15,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 
+sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from task_paths import task_directory, temporary_path
 sys.path.insert(0, str(ROOT / "tools/runtime"))
 from test_apks_macos import FRAMEWORKS, hold_version, preflight
 
@@ -38,10 +42,11 @@ def main():
     parser.add_argument("--framework", type=Path, help="development dex override; default: the selected version's dex")
     parser.add_argument("--out", type=Path, help="new output directory")
     args = parser.parse_args()
+    task = task_directory(label="macos-surface-images")
     runtime = args.runtime.resolve(strict=True)
     framework = (args.framework or runtime / "resources/java-runtime/husk-framework.dex").resolve(strict=True)
-    out = (args.out or ROOT / "build/surface-image-tests" /
-           (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-{os.getpid()}")).resolve()
+    out = temporary_path(args.out or task / "evidence" /
+                         ("surface-images-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + f"-{os.getpid()}"))
     if out == runtime or runtime in out.parents or out in runtime.parents:
         parser.error("output and immutable Runtime directories must not overlap")
     out.mkdir(parents=True, exist_ok=False)
@@ -51,27 +56,31 @@ def main():
     d8 = Path(os.environ.get("HUSK_D8", str(ROOT / "build/tools/r8.jar"))).resolve(strict=True)
     if not javac or not java:
         parser.error("set HUSK_JDK to an installed JDK")
-    report = {"runtime": str(runtime), "framework": str(framework), "private_developer_api": True, "tests": []}
+    report = {"runtime": str(runtime), "framework": str(framework), "private_developer_api": True,
+              "task_directory": str(task),
+              "temporary_environment": {key: os.environ.get(key) for key in ["TMPDIR", "TMP", "TEMP"]}, "tests": []}
     try:
         with hold_version(runtime) as (lease, lease_path):
             report["version_lease"] = str(lease_path)
             report["preflight"] = preflight(runtime, out)
-            classes, dex = out / "classes", out / "dex"
+            work = Path(tempfile.mkdtemp(prefix="surface-images-", dir=task / "tmp"))
+            report["work"] = str(work)
+            classes, dex = work / "classes", work / "dex"
             classes.mkdir(); dex.mkdir()
             fixtures = ["ImageReaderBufferTest", "NativeSurfaceLayerTest"]
             sourcepath = os.pathsep.join(str(ROOT / "src/java-framework" / directory)
                                          for directory in ["src", "gen-src", "stubs"])
-            command([javac, "--release", "8", "-nowarn", "-sourcepath", sourcepath, "-d", classes,
+            command([javac, "-J-Djava.io.tmpdir=" + str(task / "tmp"), "--release", "8", "-nowarn", "-sourcepath", sourcepath, "-d", classes,
                      *[ROOT / "tests/translation-layer/fixtures" / (name + ".java") for name in fixtures]],
                     out / "javac.log")
-            jar = out / "fixtures.jar"
+            jar = work / "fixtures.jar"
             with zipfile.ZipFile(jar, "w", zipfile.ZIP_DEFLATED) as archive:
                 for name in fixtures:
                     for path in sorted(classes.glob(name + "*.class")):
                         archive.write(path, path.name)
-            command([java, "-cp", d8, "com.android.tools.r8.D8", "--min-api", "26", "--output", dex, jar], out / "d8.log")
+            command([java, "-Djava.io.tmpdir=" + str(task / "tmp"), "-cp", d8, "com.android.tools.r8.D8", "--min-api", "26", "--output", dex, jar], out / "d8.log")
             library = runtime / "lib/libHuskRuntime.dylib"
-            harness = out / "java-image-test"
+            harness = work / "java-image-test"
             arguments = ["clang", "-g", "-O1", "-Wno-unused-function", "-Wno-deprecated-declarations",
                          "-I" + str(ROOT / "src/translation-layer"), "-I" + str(ROOT / "src/translation-layer-next"),
                          ROOT / "tools/java-test.c", library, "-Wl,-rpath," + str(library.parent), "-o", harness]

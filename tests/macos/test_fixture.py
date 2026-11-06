@@ -17,9 +17,14 @@ from pathlib import Path
 import plistlib
 import re
 import subprocess
+import sys
+import tempfile
 import time
 
+sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from task_paths import task_directory, temporary_path
 spec = importlib.util.spec_from_file_location("husk_macos_acceptance", ROOT / "tools/macos/acceptance.py")
 acceptance = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(acceptance)
@@ -27,6 +32,8 @@ spec.loader.exec_module(acceptance)
 
 class FixtureApp(acceptance.App):
     def __init__(self, bundle, output, runtime, state):
+        task_directory(label="macos-fixture-acceptance")
+        output, state = temporary_path(output), temporary_path(state)
         # Separate control/log/capture paths for each launch; preserve only state.
         self.bundle, self.output, self.state = bundle, output, state
         output.mkdir()
@@ -79,7 +86,9 @@ def lock_available(path):
 
 
 def build_inspector(output):
-    source = output / "inspect.swift"
+    task = task_directory(label="macos-fixture-acceptance")
+    work = Path(tempfile.mkdtemp(prefix="window-inspector-", dir=task / "tmp"))
+    source = work / "inspect.swift"
     source.write_text(r'''import AppKit
 import ImageIO
 import Foundation
@@ -120,8 +129,9 @@ if args[1] == "pixels" {
     print(String(data: data, encoding: .utf8)!)
 }
 ''')
-    binary = output / "inspect"
+    binary = work / "inspect"
     subprocess.run(["xcrun", "swiftc", "-O", str(source), "-framework", "AppKit", "-framework", "ImageIO",
+                    "-module-cache-path", str(task / "tmp/swift-module-cache"),
                     "-o", str(binary)], check=True, capture_output=True, text=True)
     return binary
 
@@ -156,12 +166,16 @@ def main():
     parser.add_argument("--runtime", type=Path, default=ROOT / "build/macos-runtime/macos-app-candidate-20261106-c")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
-    output = (args.out or ROOT / ("build/macos-fixture-acceptance-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))).resolve()
+    task = task_directory(label="macos-fixture-acceptance")
+    output = temporary_path(args.out or task / "evidence" /
+                            ("fixture-acceptance-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")))
     output.mkdir(parents=True, exist_ok=False)
     bundle, runtime = args.app.resolve(strict=True), args.runtime.resolve(strict=True)
     state = output / "shared-state"
     apps = []
     result = {"schema": 1, "kind": "macos-functional", "app": str(bundle), "runtime": str(runtime),
+              "task_directory": str(task),
+              "temporary_environment": {key: os.environ.get(key) for key in ["TMPDIR", "TMP", "TEMP"]},
               "window_capture": "real macOS window including WKWebView", "egl_capture": "raw EGL, excludes WKWebView",
               "system_memory_limit": "unsupported", "screens": []}
     try:

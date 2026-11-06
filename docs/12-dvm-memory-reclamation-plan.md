@@ -1,6 +1,6 @@
 # DVM 对象与 native 图像内存回收：审计及执行方案
 
-日期：2026-11-06。**本文是源码审计和待执行方案，不是已实现的 GC，也不是长期内存稳定验收。** 本次仅新增文档，没有按此方案修改 VM、JNI 或图形生产代码。独立 App 的运行与进程隔离状态见 [macOS 实现记录](11-macos-independent-apps.md)。
+日期：2026-11-06。**本文是源码审计和待执行方案，不是已实现的 GC，也不是长期内存稳定验收。** 尚未按本文方案实现 VM/JNI 可达性回收、终结调度或 PixelStore。独立 App 的运行、显式图像释放与进程隔离状态见 [macOS 实现记录](11-macos-independent-apps.md)。
 
 当前可确认：进程退出会让 OS 回收该进程资源；框架内部一部分独占像素已有显式 `recycle/close/release` 路径；DVM 运行期间没有可达性 GC。不能把短时间 GUI 成功、两个进程地址空间独立或退出后释放，描述成长时间运行时的内存稳定。
 
@@ -137,6 +137,6 @@ BDWGC 的 [Darwin stop-world 源码](https://github.com/bdwgc/bdwgc/blob/master/
 
 GC 解决不可达对象回收；系统限额解决超额资源的强制归属，两者不能互相替代。手工 JIT 容量仍是进程固定配置，不因这份方案引入自动扩缩容。
 
-当前 Mac 的安全 self 探针 [probe_memory_limit.c](../tools/macos/probe_memory_limit.c) 只对自身请求 64 MiB，没有分配压力，也未操作其他进程。[本次结果](../build/logs/macos-memory-limit-probe.json) 为 `kern_return=8 (KERN_NO_ACCESS)`、`hard_limit_verified=false`。Apple 的 [XNU task.c](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/task.c) 在 `task_set_phys_footprint_limit` 中检查 `proc_check_footprint_priv`，失败返回该错误。
+当前 Mac 的安全 self 探针 [probe_memory_limit.c](../tools/macos/probe_memory_limit.c) 只对自身请求 64 MiB，没有分配压力，也未操作其他进程。本次结果为 `kern_return=8 (KERN_NO_ACCESS)`、`hard_limit_verified=false`，原始 JSON 已按统一临时目录规则归档到本任务证据目录的 `legacy-build/logs/macos-memory-limit-probe.json`。Apple 的 [XNU task.c](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/task.c) 在 `task_set_phys_footprint_limit` 中检查 `proc_check_footprint_priv`，失败返回该错误。
 
 此记录只说明**本次运行身份和环境没有取得该接口所需授权**；不是所有 Mac 或未来 iOS 的不可能性证明。即使之后 setter 成功，也仍要单独验证有效限制、前后台切换、超额动作及 WebKit/GPU/helper 资源归属。当前不得承诺“A 任意增长时 B 永不受整机压力影响”。

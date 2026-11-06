@@ -6,8 +6,11 @@ import os
 from pathlib import Path
 import tempfile
 import urllib.request
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from task_paths import task_directory, staging_directory, temporary_path
 FILES = {
     "NotoSansCJK-Regular.ttc": (
         "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTC/NotoSansCJK-Regular.ttc",
@@ -19,6 +22,7 @@ FILES = {
 
 
 def main():
+    task_directory("macos-fonts")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fonts", type=Path, default=ROOT / "build/android-system/fonts")
     args = parser.parse_args()
@@ -30,7 +34,7 @@ def main():
                 raise ValueError(f"existing font resource differs; preserve it and choose another --fonts directory: {target}")
             print(f"Verified: {target}")
             continue
-        fd, temporary = tempfile.mkstemp(prefix=".noto-", dir=args.fonts)
+        fd, temporary = tempfile.mkstemp(prefix="noto-", dir=staging_directory(args.fonts))
         try:
             digest = hashlib.sha256()
             total = 0
@@ -49,7 +53,7 @@ def main():
             os.link(temporary, target)
             print(f"Prepared: {target}")
         finally:
-            Path(temporary).unlink(missing_ok=True)
+            temporary_path(temporary).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

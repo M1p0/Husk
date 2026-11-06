@@ -7,6 +7,7 @@ same javac/R8 tools used by java-framework/build.sh. No installation or launch.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -14,11 +15,15 @@ from pathlib import Path
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import zipfile
 import zlib
 
+sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from task_paths import task_directory, temporary_path
 PACKAGE = "org.husk.fixture"
 ACTIVITY = PACKAGE + ".MainActivity"
 ANDROID = "http://schemas.android.com/apk/res/android"
@@ -117,7 +122,7 @@ def compile_java(javac, sources, destination, work, name, classpath=None):
     arguments += [str(p) for p in sources]
     argfile = work / (name + ".args")
     argfile.write_text("\n".join('"' + a.replace("\\", "\\\\").replace('"', '\\"') + '"' for a in arguments) + "\n")
-    run([javac, "@" + str(argfile)], work / (name + ".log"))
+    run([javac, "-J-Djava.io.tmpdir=" + str(task_directory() / "tmp"), "@" + str(argfile)], work / (name + ".log"))
 
 
 def jar_classes(directory, output):
@@ -141,10 +146,12 @@ def tools():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, help="new APK output; existing files are never overwritten")
-    parser.add_argument("--work", type=Path, default=ROOT / "build/macos-fixture-dev")
+    parser.add_argument("--work", type=Path, help="compiler work directory within the current task's temp directory")
     options = parser.parse_args()
-    work_root = options.work.expanduser().resolve()
-    output = (options.out or work_root / "HuskJavaFixture.apk").expanduser().resolve()
+    task = task_directory(label="macos-fixture")
+    work_root = temporary_path(options.work or task / "tmp")
+    name = "HuskJavaFixture-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + f"-{os.getpid()}.apk"
+    output = temporary_path(options.out or task / "evidence" / name)
     if os.path.lexists(output):
         raise FileExistsError(f"choose a new APK output: {output}")
     work_root.mkdir(parents=True, exist_ok=True)
@@ -163,7 +170,7 @@ def main():
     jar_classes(framework_classes, framework_jar)
     dex = work / "dex"
     dex.mkdir()
-    run([jdk / "bin/java", "-cp", d8, "com.android.tools.r8.D8", "--min-api", "26", "--lib", jdk,
+    run([jdk / "bin/java", "-Djava.io.tmpdir=" + str(task / "tmp"), "-cp", d8, "com.android.tools.r8.D8", "--min-api", "26", "--lib", jdk,
          "--classpath", framework_jar, "--output", dex, app_jar], work / "d8.log")
     if not (dex / "classes.dex").read_bytes().startswith(b"dex\n"):
         raise RuntimeError("D8 did not produce a DEX file")
@@ -189,6 +196,7 @@ def main():
         destination.flush()
         os.fsync(destination.fileno())
     print(json.dumps({"apk": str(output), "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+                      "task_directory": str(task), "tmpdir": os.environ.get("TMPDIR"),
                       "work": str(work), "jdk": str(jdk), "r8": str(d8), **contract}, indent=2))
 
 

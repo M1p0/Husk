@@ -30,6 +30,8 @@ import xml.etree.ElementTree as ET
 from zipfile import BadZipFile, ZipFile
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from task_paths import task_directory, staging_directory, temporary_path
 DEFAULT_STORE = ROOT / "build/macos-runtime"
 DEFAULT_APPLICATIONS = ROOT / "build/macos-apps"
 
@@ -292,7 +294,7 @@ def sync_directory(path: Path):
 
 
 def atomic_json(path: Path, value: dict):
-    fd, temporary = tempfile.mkstemp(prefix="." + path.name + "-", dir=path.parent)
+    fd, temporary = tempfile.mkstemp(prefix="." + path.name + "-", dir=staging_directory(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(value, stream, ensure_ascii=False, indent=2, sort_keys=True)
@@ -300,7 +302,7 @@ def atomic_json(path: Path, value: dict):
         os.replace(temporary, path)
         sync_directory(path.parent)
     finally:
-        if os.path.exists(temporary): os.unlink(temporary)
+        if os.path.exists(temporary): temporary_path(temporary).unlink()
 
 
 def safe_relative(value: str) -> bool:
@@ -369,7 +371,7 @@ def validate_runtime(runtime: Path) -> dict:
 def make_icon(resources: Path, raw: bytes):
     source = resources / "AppIconSource.png"
     source.write_bytes(raw)
-    with tempfile.TemporaryDirectory(prefix="husk-icon-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="husk-icon-", dir=task_directory() / "tmp") as temporary:
         iconset = Path(temporary) / "AppIcon.iconset"
         iconset.mkdir()
         for size in (16, 32, 128, 256, 512):
@@ -418,9 +420,9 @@ def install_snapshot(options, apk: Path):
     if not raw_icon.startswith(b"\x89PNG\r\n\x1a\n"): raise ValueError("launcher icon must be PNG")
     with version_lease(runtime):
         validate_runtime(runtime)
-        host = ROOT / "build/macos-host/HuskAppHost"
+        host = task_directory() / "tmp/host/HuskAppHost"
         run(["bash", str(ROOT / "scripts/build_macos_app_host.sh"), str(host)])
-        staging_parent = Path(tempfile.mkdtemp(prefix=".husk-install-", dir=applications))
+        staging_parent = Path(tempfile.mkdtemp(prefix="husk-install-", dir=staging_directory(applications)))
         staging = staging_parent / destination.name
         try:
             resources = staging / "Contents/Resources"
@@ -461,7 +463,7 @@ def install_snapshot(options, apk: Path):
             publish_exclusive(staging, destination)
             sync_directory(applications)
         finally:
-            shutil.rmtree(staging_parent)
+            shutil.rmtree(temporary_path(staging_parent))
     print(json.dumps({"ok": True, "application": str(destination), **config}, ensure_ascii=False, indent=2))
 
 
@@ -478,7 +480,7 @@ def install(options):
         # Serialize the identity check and publication, including installations
         # with different names but the same Android package identity.
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        with tempfile.TemporaryDirectory(prefix="husk-apk-snapshot-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="husk-apk-snapshot-", dir=task_directory() / "tmp") as temporary:
             snapshot = Path(temporary) / "input.apk"
             shutil.copyfile(source, snapshot)
             # Metadata, icon and published APK all come from this same snapshot;
@@ -512,6 +514,7 @@ def arguments():
 
 
 def main():
+    task_directory("macos-install")
     options = arguments()
     if sys.platform != "darwin" or platform.machine() != "arm64": raise ValueError("requires native Apple Silicon macOS")
     if options.command == "install": install(options)

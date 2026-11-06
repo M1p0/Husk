@@ -32,6 +32,10 @@ macOS 外壳包含独立 Dock/窗口身份、真实 CAMetalLayer 呈现、原生
 先准备仓库已有的 `build/java-runtime`、`build/android-system` 与 Java 构建所需 JDK/R8。只重建 Java 框架可用：
 
 ```sh
+export HUSK_TASK_TMPDIR="$(python3 -B tools/task_paths.py macos-apps)"
+export TMPDIR="$HUSK_TASK_TMPDIR/tmp" TMP="$HUSK_TASK_TMPDIR/tmp" TEMP="$HUSK_TASK_TMPDIR/tmp"
+export PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX="$HUSK_TASK_TMPDIR/tmp/pycache"
+
 HUSK_JDK=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home \
 HUSK_D8="$PWD/build/tools/r8.jar" \
 src/java-framework/build.sh build/java-runtime/husk-framework.dex
@@ -50,7 +54,7 @@ app profile 会复制匹配的 macOS arm64 ANGLE 库及其许可证，运行时�
 
 中文字体沿用 Husk 的 Noto CJK 来源。完整运行库应在 `resources/android-system/fonts` 带 `NotoSansCJK-Regular.ttc` 及其 OFL 许可证；Java dex、字体、图形和证书都属于同一版本清单。
 
-安装器从同一份 APK 暂存快照解析并发布，原 Downloads 文件不变。Bundle ID 从真实包名稳定派生，APK 文件名使用 SHA256。安装采用目标盘暂存、签名校验、目录互斥和排他原子发布。当前拒绝覆盖已有同包安装；尚未实现 Android 签名连续性验证，因此 APK 自身更新不会借用运行库升级流程覆盖旧应用。
+安装器从同一份 APK 暂存快照解析并发布，原 Downloads 文件不变。Bundle ID 从真实包名稳定派生，APK 文件名使用 SHA256。安装采用指定任务临时目录暂存、同卷校验、签名校验、目录互斥和排他原子发布。临时目录与交付目录不同卷时明确拒绝，不改用交付目录做临时区。当前拒绝覆盖已有同包安装；尚未实现 Android 签名连续性验证，因此 APK 自身更新不会借用运行库升级流程覆盖旧应用。
 
 默认数据目录：
 
@@ -112,6 +116,10 @@ sequenceDiagram
 冻结的 app-v1 表前缀允许将来在尾部增加可选接口；新增运行库不能改变既有字段顺序或扩大这个最低前缀要求。新外壳需要更大表时仍检查实际 `struct_size`，不兼容版本会在 Guest 执行前显示错误。首次开发期的候选包不作为已发布的 ABI 兼容承诺。
 
 ABI 使用 `struct_size` 和独立版本号协商，字符串在 start/configure 时复制，宿主视图、layer、回调 userdata 保留到进程退出。剪贴板用调用方缓冲区，避免跨库内存释放约定。start/stop 在 worker 调用，主线程持续运行；一个进程只允许一次 APK 启动尝试。错误或完全关闭都结束该 App 的进程，不复用半初始化状态。
+
+APK 明确调用 `exit(status)` 时，独立应用 profile 直接按该状态结束本进程，不先取消其他工作线程。这样保留 APK 的退出语义，避免本已请求 `exit(0)` 的 Flutter 窗口因宿主先取消 Go 数据库 I/O，又被后台 panic 改成 `exit(2)`。普通 Activity.finish 和窗口关闭仍可走宿主的清理路径。
+
+所有本地验证的日志、截图、APK 快照、harness、编译中间文件与暂存发布目录都在 `/Users/m1p0/Developer/temp/codex/Husk/<任务名>-<随机标识>/`，由 `tools/task_paths.py` 统一管理并向子进程传递临时/缓存目录。正式源码、回归工具、安装后的 `.app` 和发布后的完整 Runtime 保留在项目约定位置。运行时的临时文件、匿名共享内存和 Unix socket 映射尊重显式临时目录；非法目录失败，不再回退到 `/tmp`。
 
 未来 iOS 复用 APK/DEX/ELF、Bionic/JNI、Java 框架、启动 ABI、完整版本清单、持有协议和验收场景；替换 AppKit 窗口/输入、系统注册/容器、签名/JIT、权限/后台及资源限制适配。macOS `.dylib` 和 ANGLE 必须重新编译成正确的 iOS 目标，不能直接拷贝。当前 Mac adapter 有明确平台编译约束；移植工作集中在宿主适配和实机能力验证。
 

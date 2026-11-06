@@ -63,7 +63,8 @@ typedef struct husk_runtime_app_api_v1 {
      * get_info advertises HUSK_RUNTIME_CAP_APK_LAUNCH. Keep that handle and its
      * logging userdata alive until application process exit. All
      * config strings are copied. One start attempt per process, including
-     * failure. This does not provide a sandbox or system memory hard limit. */
+     * failure. Explicit guest exit() terminates this one-App process with the
+     * requested status. This does not provide a sandbox or system memory hard limit. */
     int32_t (*start)(husk_runtime_handle *, const husk_runtime_app_config_v1 *,
                      char *error, size_t error_capacity);
     /* Call from a worker; does not unload the Runtime or permit another APK. */

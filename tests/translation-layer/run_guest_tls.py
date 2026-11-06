@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Build tiny arm64 ELF fixtures with Apple's assembler, then execute native loader regressions."""
+import argparse
 import os
 from pathlib import Path
 import struct
@@ -7,7 +8,20 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / "build/guest-tls-test"
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(ROOT / "tools"))
+from task_paths import task_directory, temporary_path
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--out", type=Path, help="Evidence directory inside the current task directory")
+parser.add_argument("--fixtures-only", action="store_true", help="Generate ELF fixtures without building or running the harness")
+args = parser.parse_args()
+TASK = task_directory("guest-tls-test")
+OUT = temporary_path(args.out if args.out is not None else TASK / "evidence" / "guest-tls-test")
+TASK_TEMP = TASK / "tmp"
+temporary_path(TASK_TEMP)
+TASK_TEMP.mkdir(parents=True, exist_ok=True)
+CHILD_ENV = dict(os.environ, TMPDIR=str(TASK_TEMP), TMP=str(TASK_TEMP), TEMP=str(TASK_TEMP), TL_TMP=str(TASK_TEMP), HUSK_TASK_TMPDIR=str(TASK))
 OUT.mkdir(parents=True, exist_ok=True)
 assembly = [".text", ".p2align 2"]
 for register in [0, 16, 17, 18, 28]:
@@ -32,7 +46,7 @@ assembly += ["str x28, [x19, #224]", "mrs x0, nzcv", "str x0, [x19, #240]", "str
              ".globl _small_stack_syscall", "_small_stack_syscall:", "stp x19, x30, [sp, #-16]!", "mov x19, sp",
              "mov sp, x0", "mov x0, #0", "mov x8, #261", "svc #0", "mov sp, x19", "ldp x19, x30, [sp], #16", "ret", "_descriptor_placeholder:", ".space 16"]
 (OUT / "fixture.s").write_text("\n".join(assembly) + "\n")
-subprocess.run(["clang", "-arch", "arm64", "-c", OUT / "fixture.s", "-o", OUT / "fixture.o"], check=True)
+subprocess.run(["clang", "-arch", "arm64", "-c", OUT / "fixture.s", "-o", OUT / "fixture.o"], check=True, env=CHILD_ENV)
 obj = (OUT / "fixture.o").read_bytes()
 ncommands = struct.unpack_from("<I", obj, 16)[0]
 offset, symbols, text = 32, None, None
@@ -90,7 +104,13 @@ for filename in ["libtls-one.so", "libtls-two.so"]:
                 (23, 5, 2, 0x900, 0x900, 4 * len(hashes), 3, 0, 4, 4), (29, 3, 0, 0, 0x2600, len(names), 0, 0, 1, 0), (39, 1, 0x402, 0x2200, 0x2200, 8, 0, 0, 8, 0)]
     for n, row in enumerate(sections): struct.pack_into("<IIQQQQIIQQ", image, 0x2800 + n * 64, *row)
     (OUT / filename).write_bytes(image)
-if "--fixtures-only" not in sys.argv:
+if not args.fixtures_only:
     with (OUT / "build.log").open("w") as log:
-        subprocess.run(["bash", ROOT / "tools/regress/build.sh", "tests/translation-layer/guest_tls.c", OUT / "guest-tls-test"], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True)
-    subprocess.run([OUT / "guest-tls-test", OUT / "libtls-one.so", OUT / "libtls-two.so"], cwd=ROOT, check=True)
+        subprocess.run(["bash", ROOT / "tools/regress/build.sh", "tests/translation-layer/guest_tls.c", OUT / "guest-tls-test"], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True, env=CHILD_ENV)
+    with (OUT / "results.log").open("w") as log:
+        result = subprocess.run([OUT / "guest-tls-test", OUT / "libtls-one.so", OUT / "libtls-two.so"],
+                                cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=CHILD_ENV)
+        log.write(result.stdout)
+        print(result.stdout, end="")
+        result.check_returncode()
+    print(OUT / "results.log")

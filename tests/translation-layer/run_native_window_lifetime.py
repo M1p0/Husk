@@ -4,11 +4,26 @@
 No APK is executed. DVM is deliberately absent so JNI's reference-counted HLE
 mode can verify ownership: Java DVM currently defers object collection separately.
 """
+import argparse
+import os
 from pathlib import Path
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / "build/native-window-lifetime-test"
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(ROOT / "tools"))
+from task_paths import task_directory, temporary_path
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--out", type=Path, help="Evidence directory inside the current task directory")
+args = parser.parse_args()
+TASK = task_directory("native-window-lifetime-test")
+OUT = temporary_path(args.out if args.out is not None else TASK / "evidence" / "native-window-lifetime-test")
+TASK_TEMP = TASK / "tmp"
+temporary_path(TASK_TEMP)
+TASK_TEMP.mkdir(parents=True, exist_ok=True)
+CHILD_ENV = dict(os.environ, TMPDIR=str(TASK_TEMP), TMP=str(TASK_TEMP), TEMP=str(TASK_TEMP), TL_TMP=str(TASK_TEMP), HUSK_TASK_TMPDIR=str(TASK))
 OUT.mkdir(parents=True, exist_ok=True)
 native, old = ROOT / "src/translation-layer-next", ROOT / "src/translation-layer"
 sources = [ROOT / "tests/translation-layer/native_window_lifetime.c"]
@@ -24,10 +39,10 @@ for framework in ("AudioToolbox", "Foundation", "CoreFoundation", "CoreText", "C
     command += ["-framework", framework]
 command += ["-o", str(binary)]
 with (OUT / "build.log").open("w") as log:
-    subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True)
-subprocess.run(["codesign", "--force", "--sign", "-", str(binary)], check=True, capture_output=True)
+    subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True, env=CHILD_ENV)
+subprocess.run(["codesign", "--force", "--sign", "-", str(binary)], check=True, capture_output=True, env=CHILD_ENV)
 with (OUT / "results.log").open("w") as log:
-    result = subprocess.run([str(binary)], cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    result = subprocess.run([str(binary)], cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60, env=CHILD_ENV)
     log.write(result.stdout)
     print(result.stdout, end="")
     result.check_returncode()

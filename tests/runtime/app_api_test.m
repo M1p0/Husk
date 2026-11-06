@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <limits.h>
 
 #define REQUIRE(c) do { if (!(c)) { fprintf(stderr, "FAIL %d: %s\n", __LINE__, #c); exit(1); } } while (0)
 static const husk_runtime_app_api_v1 *api;
@@ -56,7 +57,11 @@ int main(int argc, char **argv)
         REQUIRE(api && api->abi_version == 1 && api->struct_size >= sizeof(*api));
         const husk_runtime_api_v1 *base = base_getter(1, sizeof(husk_runtime_api_v1));
         supports_apps = !!(base->get_info()->capabilities & HUSK_RUNTIME_CAP_APK_LAUNCH);
-        char temp[] = "/tmp/husk-app-abi-XXXXXX";
+        const char *temporary = getenv("TMPDIR");
+        REQUIRE(temporary && !strncmp(temporary, "/Users/m1p0/Developer/temp/", sizeof("/Users/m1p0/Developer/temp/") - 1));
+        char temp[PATH_MAX];
+        int length = snprintf(temp, sizeof(temp), "%s/husk-app-abi-XXXXXX", temporary);
+        REQUIRE(length > 0 && (size_t)length < sizeof(temp));
         REQUIRE(mkdtemp(temp));
         NSString *root = [NSString stringWithUTF8String:temp];
         NSMutableArray<NSString *> *dirs = [NSMutableArray array];

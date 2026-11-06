@@ -27,10 +27,13 @@ import sys
 import time
 import zipfile
 
+sys.dont_write_bytecode = True
 from package_macos import FRAMEWORKS, source_snapshot
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from task_paths import task_directory, temporary_path
 
 
 def digest(path: Path) -> str:
@@ -314,6 +317,7 @@ def main() -> int:
     parser.add_argument("--out", type=Path, help="new output directory; whitespace is unsupported by the harness control format")
     parser.add_argument("apks", nargs="+", type=Path)
     options = parser.parse_args()
+    task = task_directory(label="macos-apk-diagnostics")
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         parser.error("requires Apple Silicon macOS")
     if not 3 <= options.seconds <= 300:
@@ -326,7 +330,7 @@ def main() -> int:
     if not runtime.is_dir() or not egl.is_file() or not gles.is_file() or not all(path.is_file() for path in apks):
         parser.error("Runtime must be a directory and APK/graphics inputs must be files")
     name = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-{os.getpid()}"
-    out = (options.out or ROOT / "build/runtime-apk-diagnostics" / name).resolve()
+    out = temporary_path(options.out or task / "evidence" / ("runtime-apk-diagnostics-" + name))
     if any(character.isspace() for character in str(out)):
         parser.error("--out cannot contain whitespace: the legacy screenshot control format has no quoting")
     if out == runtime or runtime in out.parents or out in runtime.parents:
@@ -334,6 +338,8 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=False)
     report = {
         "scope": "local compatibility diagnostic using private tl_* interfaces; not stable ABI APK launch or M2",
+        "task_directory": str(task),
+        "temporary_environment": {key: os.environ.get(key) for key in ["TMPDIR", "TMP", "TEMP"]},
         "runtime": str(runtime), "output": str(out), "observed_at": datetime.now(timezone.utc).isoformat(),
         "host": {"platform": platform.platform(), "architecture": platform.machine()},
         "egl": str(egl), "gles": str(gles), "cases": [],

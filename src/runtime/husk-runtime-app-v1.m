@@ -117,9 +117,12 @@ static void vibrate(int milliseconds) { if (g_host.vibrate) g_host.vibrate(g_hos
 static void guest_exited(int status)
 {
     tl_log_line("runtime-app: guest requested exit(%d)", status);
-    atomic_store(&g_guest_ended, true);
-    tl_session_request_stop();
-    pthread_exit(NULL);
+    /* This profile hosts exactly one APK per process. Android's explicit
+     * exit is terminal: preserve its status and let the OS release this app's
+     * resources. Cancelling unrelated app workers first can make Go's I/O
+     * cleanup panic and replace an intentional exit(0) with exit(2). */
+    fflush(NULL);
+    _exit(status);
 }
 
 static int32_t app_start(husk_runtime_handle *handle, const husk_runtime_app_config_v1 *config,
