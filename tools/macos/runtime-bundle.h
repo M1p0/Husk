@@ -116,6 +116,11 @@ static bool macos_library(NSString *path)
 }
 static NSDictionary *validate_bundle(NSString *root, NSString **error)
 {
+    struct stat published;
+    if (lstat(root.fileSystemRepresentation, &published) || !S_ISDIR(published.st_mode) ||
+        (published.st_mode & 0222)) {
+        *error = @"Runtime root is not a completed read-only publication"; return nil;
+    }
     if (!safe_file(root, @"manifest.json")) { *error = @"manifest must be a regular, unlinked file"; return nil; }
     NSData *manifest_data = read_manifest([root stringByAppendingPathComponent:@"manifest.json"]);
     if (!manifest_data.length) {

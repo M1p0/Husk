@@ -4,7 +4,7 @@
 
 后续已新增可启动 APK 的 `macos-app` profile、独立 app ABI、安装器和真实窗口，见[macOS 独立 App 实现](11-macos-independent-apps.md)。本文保留 bootstrap profile 的验收边界。
 
-独立 Mac `.app`、稳定 ABI 下的 APK 启动/窗口接口、沙箱及资源控制仍属于后续工作。本文不构成 iOS 27 能力证明。对应[架构](07-independent-app-runtime-design.md)与[执行方案](08-independent-app-runtime-execution-plan.md)的 M1。
+本文只覆盖 bootstrap 阶段；后续独立 Mac `.app` 和 APK 启动/窗口接口见上文链接，系统沙箱和硬性资源控制仍未完成。本文不构成 iOS 27 能力证明。对应[架构](07-independent-app-runtime-design.md)与[执行方案](08-independent-app-runtime-execution-plan.md)的 M1。
 
 ## 1. 实现范围
 
@@ -67,23 +67,26 @@
 ## 4. 加载探针
 
 ```sh
-mkdir -p build/runtime-m1-tools
+export HUSK_TASK_TMPDIR="$(python3 -B tools/task_paths.py runtime-demo)"
+export TMPDIR="$HUSK_TASK_TMPDIR/tmp" TMP="$HUSK_TASK_TMPDIR/tmp" TEMP="$HUSK_TASK_TMPDIR/tmp"
+export PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX="$HUSK_TASK_TMPDIR/tmp/pycache"
+mkdir -p "$HUSK_TASK_TMPDIR/tmp/runtime-tools"
 clang -fobjc-arc -Wall -Wextra -Wno-deprecated-declarations \
   tools/runtime-probe.m -framework Foundation \
-  -o build/runtime-m1-tools/runtime-probe
-mkdir -p build/runtime-demo/package build/runtime-demo/data \
-  build/runtime-demo/cache build/runtime-demo/config
+  -o "$HUSK_TASK_TMPDIR/tmp/runtime-tools/runtime-probe"
+mkdir -p "$HUSK_TASK_TMPDIR/tmp/runtime-demo/package" "$HUSK_TASK_TMPDIR/tmp/runtime-demo/data" \
+  "$HUSK_TASK_TMPDIR/tmp/runtime-demo/cache" "$HUSK_TASK_TMPDIR/tmp/runtime-demo/config"
 ```
 
 用上一步发布的 `my-m1-version`，显式传入所有根目录：
 
 ```sh
-build/runtime-m1-tools/runtime-probe \
+"$HUSK_TASK_TMPDIR/tmp/runtime-tools/runtime-probe" \
   --runtime "$PWD/build/macos-runtime/my-m1-version" \
-  --package "$PWD/build/runtime-demo/package" \
-  --data "$PWD/build/runtime-demo/data" \
-  --cache "$PWD/build/runtime-demo/cache" \
-  --config "$PWD/build/runtime-demo/config" \
+  --package "$HUSK_TASK_TMPDIR/tmp/runtime-demo/package" \
+  --data "$HUSK_TASK_TMPDIR/tmp/runtime-demo/data" \
+  --cache "$HUSK_TASK_TMPDIR/tmp/runtime-demo/cache" \
+  --config "$HUSK_TASK_TMPDIR/tmp/runtime-demo/config" \
   --app-id dev.husk.example --generation example-1 --jit-mib 256
 ```
 

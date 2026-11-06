@@ -1,6 +1,6 @@
 # macOS M1：两个下载 APK 的实测记录
 
-日期：2026-11-06。结论：**M1 的动态加载、ABI 与版本持有测试通过；下面两个真实 APK 均未完成可用性验收。** 这是本地兼容性诊断，不是 M2 独立 `.app` 或 iOS 验收。
+日期：2026-11-06。这是 **M1 初期的历史诊断**：当时动态加载、ABI 与版本持有测试通过，下面两个真实 APK 均未完成可用性验收。后续已加入 Go TLS、图形同步修复与独立 `.app`，当前实现和验收边界见[独立 App 文档](11-macos-independent-apps.md)；本页保留原失败现场。
 
 ## 1. 输入与环境
 
@@ -60,6 +60,8 @@ Jasmine 动态复测与静态对照的 PNG SHA256 均为：
 
 以下是本工作区的输出，未随源码提交：
 
+按临时目录要求，下面原 `build/` 路径的证据已迁移到 `/Users/m1p0/Developer/temp/codex/Husk/macos-independent-apps-30fcdbd9/evidence/legacy-build/`；对应日志位于其 `logs/`，逐项迁移清单位于任务目录 `logs/project-temp-transfers.json`。
+
 - 动态首轮：`build/apk-diagnostics-20261106-first/results.json`。
 - 动态复测：`build/apk-diagnostics-20261106-repeat/results.json`。
 - 静态对照：`build/apk-diagnostics-20261106-static/control-062545-22079/results.json`。
@@ -74,11 +76,14 @@ Jasmine 动态复测与静态对照的 PNG SHA256 均为：
 先按 [M1 文档](09-macos-runtime-m1.md)构建 Runtime。输出目录必须是新的目录；图形库路径需在本机实际存在且为匹配的 macOS arm64 库对：
 
 ```sh
+export HUSK_TASK_TMPDIR="$(python3 -B tools/task_paths.py apk-diagnostics)"
+export TMPDIR="$HUSK_TASK_TMPDIR/tmp" TMP="$HUSK_TASK_TMPDIR/tmp" TEMP="$HUSK_TASK_TMPDIR/tmp"
+export PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX="$HUSK_TASK_TMPDIR/tmp/pycache"
 python3 tools/runtime/test_apks_macos.py \
   --runtime build/macos-runtime/m1-apk-validation-20261106 \
   --egl '/Applications/Visual Studio Code.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Libraries/libEGL.dylib' \
   --gles '/Applications/Visual Studio Code.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Libraries/libGLESv2.dylib' \
-  --seconds 20 --out build/apk-diagnostics-new-run \
+  --seconds 20 --out "$HUSK_TASK_TMPDIR/evidence/apk-diagnostics-new-run" \
   "$HOME/Downloads/pikapika-v1.8.23-android-arm64-flutter_3.13.9.apk" \
   "$HOME/Downloads/jasmine-arm64-v1.7.22.apk"
 ```

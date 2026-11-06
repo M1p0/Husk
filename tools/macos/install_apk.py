@@ -340,6 +340,9 @@ def version_lease(runtime: Path):
 
 
 def validate_runtime(runtime: Path) -> dict:
+    root_info = runtime.lstat()
+    if not stat.S_ISDIR(root_info.st_mode) or root_info.st_mode & 0o222:
+        raise ValueError("Runtime root must be a published read-only directory")
     manifest_path = safe_file(runtime, "manifest.json")
     if manifest_path.stat().st_size > 8 << 20: raise ValueError("manifest too large")
     manifest = json.loads(manifest_path.read_text())
@@ -420,11 +423,11 @@ def install_snapshot(options, apk: Path):
     if not raw_icon.startswith(b"\x89PNG\r\n\x1a\n"): raise ValueError("launcher icon must be PNG")
     with version_lease(runtime):
         validate_runtime(runtime)
-        host = task_directory() / "tmp/host/HuskAppHost"
-        run(["bash", str(ROOT / "scripts/build_macos_app_host.sh"), str(host)])
         staging_parent = Path(tempfile.mkdtemp(prefix="husk-install-", dir=staging_directory(applications)))
         staging = staging_parent / destination.name
         try:
+            host = staging_parent / "HuskAppHost"
+            run(["bash", str(ROOT / "scripts/build_macos_app_host.sh"), str(host)])
             resources = staging / "Contents/Resources"
             package_root = resources / "package"
             package_root.mkdir(parents=True)

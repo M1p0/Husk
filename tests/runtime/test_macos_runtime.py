@@ -111,6 +111,14 @@ def main():
                 assert payload["ok"] == (expected == 0), payload
                 return payload
 
+            a.chmod(0o755)
+            try:
+                incomplete = run(name="incomplete-publication", expected=2)
+                assert "read-only publication" in incomplete["error"], incomplete
+            finally:
+                a.chmod(0o555)
+            print("PASS: interrupted publication with a writable root cannot load")
+
             def holding(version, name, **overrides):
                 stderr = (work / (name + ".stderr")).open("w")
                 process = subprocess.Popen(arguments(version, name, **{"hold-seconds": "45", **overrides}),

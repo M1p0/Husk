@@ -12,6 +12,7 @@ import argparse
 import ctypes
 from datetime import datetime, timezone
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -332,15 +333,24 @@ def main() -> int:
             os.fsync(stream.fileno())
         make_readonly(staging)
         sync_directory(staging)
-        descriptor = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0), 0o444)
+        descriptor = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o444)
         try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             os.write(descriptor, (build_id + "\n").encode())
             os.fsync(descriptor)
+            sync_directory(leases)
+            # Darwin requires write access to the moved directory when its
+            # parent changes. Keep all contents read-only; only the root is
+            # writable during the atomic move from task scratch. Readers take
+            # this stable lease before validation/loading, so they cannot
+            # observe the brief root-permission transition.
+            staging.chmod(0o755)
+            publish_exclusive(staging, version)
+            version.chmod(0o555)
+            sync_directory(version)
+            sync_directory(store)
         finally:
             os.close(descriptor)
-        sync_directory(leases)
-        publish_exclusive(staging, version)
-        sync_directory(store)
         print(f"Published: {version}", flush=True)
         print(f"Profile: {options.profile}; {len(artifacts)} hashed artifacts; lease: {lease}", flush=True)
         return 0
