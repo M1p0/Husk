@@ -155,6 +155,7 @@ def main():
             run(name="wrong-abi", expected=3, **{"requested-abi": "2"})
             run(name="short-table", expected=3, **{"table-size": "0"})
             run(name="overlap", expected=4, data=str(a))
+            assert run(name="zero-jit", **{"jit-mib": "0"})["manual_jit_bytes"] == 0
             print("PASS: incompatible ABI, undersized function table and writable/Runtime overlap are rejected")
 
             cert = a / "resources/cacert.pem"
@@ -184,6 +185,9 @@ def main():
                 try:
                     manifest_file.write_bytes(b"")
                     run(name="empty-manifest", expected=2)
+                    with manifest_file.open("wb") as stream:
+                        stream.truncate(9 * 1024 * 1024)
+                    run(name="oversized-manifest", expected=2)
                     manifest = json.loads(original_manifest)
                     manifest["artifacts"]["../outside"] = "0" * 64
                     manifest_file.write_text(json.dumps(manifest))

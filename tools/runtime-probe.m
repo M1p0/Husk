@@ -86,6 +86,25 @@ static NSString *digest(NSString *path)
     for (size_t i = 0; i < sizeof(result); i++) [hex appendFormat:@"%02x", result[i]];
     return hex;
 }
+static NSData *read_manifest(NSString *path)
+{
+    const size_t limit = 8 * 1024 * 1024;
+    int fd = open(path.fileSystemRepresentation, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) return nil;
+    struct stat st;
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_nlink != 1 ||
+        st.st_size <= 0 || (uint64_t)st.st_size > limit) { close(fd); return nil; }
+    NSMutableData *data = [NSMutableData data];
+    uint8_t buffer[64 * 1024];
+    ssize_t n;
+    while ((n = read(fd, buffer, sizeof(buffer))) != 0) {
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 || (size_t)n > limit - data.length) { close(fd); return nil; }
+        [data appendBytes:buffer length:(NSUInteger)n];
+    }
+    close(fd);
+    return data;
+}
 static bool macos_library(NSString *path)
 {
     NSData *data = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:NULL];
@@ -111,8 +130,8 @@ static bool macos_library(NSString *path)
 static NSDictionary *validate_bundle(NSString *root, NSString **error)
 {
     if (!safe_file(root, @"manifest.json")) { *error = @"manifest must be a regular, unlinked file"; return nil; }
-    NSData *manifest_data = [NSData dataWithContentsOfFile:[root stringByAppendingPathComponent:@"manifest.json"]];
-    if (!manifest_data.length || manifest_data.length > 8 * 1024 * 1024) {
+    NSData *manifest_data = read_manifest([root stringByAppendingPathComponent:@"manifest.json"]);
+    if (!manifest_data.length) {
         *error = @"manifest unreadable, empty or too large"; return nil;
     }
     NSDictionary *manifest = [NSJSONSerialization JSONObjectWithData:manifest_data options:0 error:NULL];
@@ -198,7 +217,7 @@ int main(int argc, char **argv)
         for (NSString *key in @[@"--runtime", @"--package", @"--data", @"--cache", @"--config", @"--app-id", @"--generation", @"--jit-mib"])
             if (!args[key].length) return failure([@"missing argument " stringByAppendingString:key], 2);
         unsigned long long jit, hold = 0, requested = 1, table_size = sizeof(husk_runtime_api_v1), timeout = 1000;
-        if (!unsigned_number(args[@"--jit-mib"], &jit) || !jit || jit > UINT64_MAX / (1u << 20) ||
+        if (!unsigned_number(args[@"--jit-mib"], &jit) || jit > UINT64_MAX / (1u << 20) ||
             (args[@"--hold-seconds"] && !unsigned_number(args[@"--hold-seconds"], &hold)) || hold > 3600 ||
             (args[@"--requested-abi"] && !unsigned_number(args[@"--requested-abi"], &requested)) || requested > UINT32_MAX ||
             (args[@"--table-size"] && !unsigned_number(args[@"--table-size"], &table_size)) || table_size > UINT32_MAX ||

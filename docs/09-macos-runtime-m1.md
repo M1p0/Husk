@@ -26,6 +26,7 @@
 - [构建入口](../scripts/build_macos_runtime.sh)与[包发布器](../tools/runtime/package_macos.py)
 - [独立加载探针](../tools/runtime-probe.m)
 - [动态 ABI 测试](../tests/runtime/context_api_test.c)与[本地集成测试](../tests/runtime/run_macos.sh)
+- [实际 APK 的动态库诊断器](../tools/runtime/test_apks_macos.py)与[两个下载 APK 的实测记录](10-macos-runtime-apk-validation.md)
 
 没有改动 iOS application target 的源码集合。这些模块由新的 Mac 构建入口使用，旧单体 harness 只作为对照。
 
@@ -110,6 +111,7 @@ sh tests/runtime/run_macos.sh --versions \
 - 同版本多个读者：最后一个退出前排他锁始终不可得，正常退出后释放。
 - 锁超时、缺失/FIFO/软链拒绝，以及取锁期间对象替换检测。
 - artifact 损坏、缺失、软链、空清单和路径越界在加载前拒绝。
+- 超大 manifest 在有界读取前检查，显式零 JIT CLI 配置原样返回。
 - JIT 值、32 MiB 栈和能力状态不被隐式改变。
 
 构建器另验证同名版本拒绝覆盖，以及编译期间修改/新增源码或头文件时拒绝发布。这是 `macos-functional` 证据；`build/` 包和原始日志为本地输出。
@@ -124,3 +126,11 @@ sh tests/runtime/run_macos.sh --versions \
 6. iOS 安装、JIT/TXM、沙箱、Jetsam、辅助资源、锁屏后台和设备 GPU 均需单独验证。
 
 后续以此版本包和 ABI 进入 M2 独立 Mac 外壳与 APK 启动接口。
+
+## 7. 实际 APK 的诊断入口
+
+`tools/runtime/test_apks_macos.py --help` 给出完整参数。传入 Runtime 版本、匹配的 macOS arm64 EGL/GLES 库和 APK 文件后，脚本先校验包与精确 native 源码快照，再仅编译 `tools/javaapp-test.c`，链接所选 dylib，保存 `nm/otool` 证据。这个兼容性 harness 使用私有 `tl_*` 接口，不扩充稳定 ABI 的能力声明。
+
+各 APK 使用独立数据、控制与帧目录，有进程级超时和精确回收。显式继承的共享锁 FD 保持到 harness 退出；不会清理其他测试程序。原有 harness 只增加 `TL_HTTP_LEGACY` 与 `TL_FRAMEDIR` 路径覆盖，生产 Runtime、手动 JIT 与线程栈未改。
+
+报告分别记录退出码、崩溃、帧计数、主位图是否均匀以及截图路径。白帧和正常退出不能认定为正确 UI；实际界面仍须检查。首次用户 APK 实测的结果与静态对照见[实测记录](10-macos-runtime-apk-validation.md)。

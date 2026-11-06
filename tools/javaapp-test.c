@@ -7,6 +7,7 @@
  * Environment: TL_JNI_TRACE=1|2, TL_VERBOSE=0..2, TL_DATA=<dir> (kept between runs), TL_PACKAGE, TL_AUDIO=1,
  * TL_CTL=<file> (lines "tap X Y", "hold X Y MS", "swipe X1 Y1 X2 Y2 MS", "wait MS", "shot PNG" (+ PNG.web.png of a web view), "js CODE", "key CODE", "pause",
  * "resume", "stacks" (every thread's frames), "quit"), TL_FRAMES=<n> (save every nth frame; default every frame, latest only).
+ * TL_HTTP_LEGACY overrides the legacy HTTP boot jar; TL_FRAMEDIR selects a host-owned frame directory.
  */
 #include <mach/mach.h>
 #include <pthread.h>
@@ -235,7 +236,7 @@ static void *run(void *p)
     } else {
         snprintf(paths[nb], sizeof(paths[nb]), "%s", getenv("TL_FRAMEWORK") ? getenv("TL_FRAMEWORK") : "/Volumes/GTAV/husk2/java/husk-framework.dex"); boot[nb] = paths[nb]; nb++;
     }
-    snprintf(paths[nb], sizeof(paths[nb]), "/Volumes/GTAV/husk2/modules/jars/org.apache.http.legacy.jar"); boot[nb] = paths[nb]; nb++;
+    snprintf(paths[nb], sizeof(paths[nb]), "%s", getenv("TL_HTTP_LEGACY") ? getenv("TL_HTTP_LEGACY") : "/Volumes/GTAV/husk2/modules/jars/org.apache.http.legacy.jar"); boot[nb] = paths[nb]; nb++;
     if (aosp) { void husk_aosp_start_system(void); husk_aosp_start_system(); }
     { char v[800];
       snprintf(v, sizeof(v), "%s", art); setenv("ANDROID_ART_ROOT", v, 0);
@@ -256,7 +257,9 @@ static void *run(void *p)
     if (getenv("TL_DATA")) { snprintf(tmp, sizeof(tmp), "%s", getenv("TL_DATA")); mkdir(tmp, 0755); } else mkdtemp(tmp);
     const char *cef = "/Users/davi/Library/Application Support/Steam/Steam.AppBundle/Steam/Contents/MacOS/Frameworks/Chromium Embedded Framework.framework/Versions/A/Libraries";
     static char egl[700], gles[700]; snprintf(egl, sizeof(egl), "%s/libEGL.dylib", cef); snprintf(gles, sizeof(gles), "%s/libGLESv2.dylib", cef);
-    static char frames[600]; snprintf(frames, sizeof(frames), "%s/husk-jframes-XXXXXX", scratch); mkdtemp(frames);
+    static char frames[600];
+    if (getenv("TL_FRAMEDIR")) { snprintf(frames, sizeof(frames), "%s", getenv("TL_FRAMEDIR")); mkdir(frames, 0755); }
+    else { snprintf(frames, sizeof(frames), "%s/husk-jframes-XXXXXX", scratch); mkdtemp(frames); }
     g_frame_dir = frames;
     fprintf(stderr, "frames: %s\ndata: %s\n", frames, tmp);
     int w = argc > 4 ? atoi(argv[3]) : 804, h = argc > 4 ? atoi(argv[4]) : 1748;

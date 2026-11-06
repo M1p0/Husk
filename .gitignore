@@ -20,6 +20,7 @@ DerivedData/
 __.SYMDEF*
 third_party/gpu/
 .build/
+__pycache__/
 *.ipa
 .freebuff/
 
