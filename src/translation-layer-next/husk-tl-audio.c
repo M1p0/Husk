@@ -15,58 +15,108 @@
 
 #define NBUF 3
 #define FRAMES_PER_BUF 1024
-#define RING_FRAMES 8192
+#define RING_FRAMES 4096
+#define OUT_RATE 48000
+#define OUT_CHANNELS 2
+
+/* Each engine output thread is a separate source. Concatenating their writes
+ * into one ring makes two simultaneous streams each play at half speed. Keep
+ * their clocks independent and mix them when the device asks for samples. */
+typedef struct audio_source {
+    struct audio_source *next;
+    int16_t ring[RING_FRAMES * OUT_CHANNELS];
+    size_t head, count;
+    int rate, channels;
+    uint64_t phase, written, played;
+    int16_t prev[OUT_CHANNELS];
+    bool have_prev, closed;
+} audio_source;
 
 static struct {
     pthread_mutex_t mu;
     pthread_cond_t cv;
     AudioQueueRef q;
     AudioQueueBufferRef bufs[NBUF];
-    int rate, channels;
-    int16_t *ring;
-    size_t head, count;           /* frames */
+    audio_source *sources;
+    uint64_t rendered;
     bool paused, failed;
 } A = { .mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER };
+
+static pthread_key_t source_key;
+static pthread_once_t source_once = PTHREAD_ONCE_INIT;
+
+static void close_source(void *ptr)
+{
+    pthread_mutex_lock(&A.mu);
+    ((audio_source *)ptr)->closed = true;
+    pthread_mutex_unlock(&A.mu);
+}
+
+static void make_source_key(void) { pthread_key_create(&source_key, close_source); }
+
+static audio_source *writer_source(void)
+{
+    pthread_once(&source_once, make_source_key);
+    audio_source *s = pthread_getspecific(source_key);
+    if (s) return s;
+    s = calloc(1, sizeof(*s));
+    if (!s) return NULL;
+    if (pthread_setspecific(source_key, s)) { free(s); return NULL; }
+    pthread_mutex_lock(&A.mu);
+    s->next = A.sources;
+    A.sources = s;
+    pthread_mutex_unlock(&A.mu);
+    return s;
+}
 
 /* The audio thread asks for samples; an empty ring is silence, never a wait. */
 static void on_buffer(void *user, AudioQueueRef q, AudioQueueBufferRef b)
 {
     (void)user;
     int16_t *out = b->mAudioData;
-    size_t want = FRAMES_PER_BUF, ch = (size_t)A.channels;
+    size_t want = FRAMES_PER_BUF;
+    int64_t mix[FRAMES_PER_BUF * OUT_CHANNELS] = { 0 };
     pthread_mutex_lock(&A.mu);
-    size_t take = A.paused ? 0 : (A.count < want ? A.count : want);
-    for (size_t i = 0; i < take; i++)
-        for (size_t c = 0; c < ch; c++) out[i * ch + c] = A.ring[((A.head + i) % RING_FRAMES) * ch + c];
-    A.head = (A.head + take) % RING_FRAMES;
-    A.count -= take;
+    audio_source **link = &A.sources;
+    while (*link) {
+        audio_source *s = *link;
+        size_t take = A.paused ? 0 : (s->count < want ? s->count : want);
+        for (size_t i = 0; i < take; i++)
+            for (size_t c = 0; c < OUT_CHANNELS; c++)
+                mix[i * OUT_CHANNELS + c] += s->ring[((s->head + i) % RING_FRAMES) * OUT_CHANNELS + c];
+        s->head = (s->head + take) % RING_FRAMES;
+        s->count -= take;
+        s->played += take;
+        if (s->closed && !s->count) { *link = s->next; free(s); }
+        else link = &s->next;
+    }
+    if (!A.paused) A.rendered += want;
     pthread_cond_broadcast(&A.cv);
     pthread_mutex_unlock(&A.mu);
-    if (take < want) memset(out + take * ch, 0, (want - take) * ch * sizeof(int16_t));
-    b->mAudioDataByteSize = (UInt32)(want * ch * sizeof(int16_t));
+    for (size_t i = 0; i < want * OUT_CHANNELS; i++)
+        out[i] = (int16_t)(mix[i] > 32767 ? 32767 : mix[i] < -32768 ? -32768 : mix[i]);
+    b->mAudioDataByteSize = (UInt32)(want * OUT_CHANNELS * sizeof(int16_t));
     AudioQueueEnqueueBuffer(q, b, 0, NULL);
 }
 
-static bool open_queue(int rate, int channels)
+static bool open_queue(void)
 {
     AudioStreamBasicDescription f = { 0 };
-    f.mSampleRate = rate; f.mFormatID = kAudioFormatLinearPCM;
+    f.mSampleRate = OUT_RATE; f.mFormatID = kAudioFormatLinearPCM;
     f.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
-    f.mBitsPerChannel = 16; f.mChannelsPerFrame = (UInt32)channels; f.mFramesPerPacket = 1;
-    f.mBytesPerFrame = f.mBytesPerPacket = (UInt32)(channels * 2);
+    f.mBitsPerChannel = 16; f.mChannelsPerFrame = OUT_CHANNELS; f.mFramesPerPacket = 1;
+    f.mBytesPerFrame = f.mBytesPerPacket = OUT_CHANNELS * 2;
     OSStatus st = AudioQueueNewOutput(&f, on_buffer, NULL, NULL, NULL, 0, &A.q);
     if (st != noErr) { tl_log_line("audio: AudioQueueNewOutput failed (%d)", (int)st); return false; }
-    A.ring = calloc((size_t)RING_FRAMES * (size_t)channels, sizeof(int16_t));
-    A.rate = rate; A.channels = channels;
     for (int i = 0; i < NBUF; i++) {
-        AudioQueueAllocateBuffer(A.q, FRAMES_PER_BUF * (UInt32)channels * 2, &A.bufs[i]);
-        memset(A.bufs[i]->mAudioData, 0, FRAMES_PER_BUF * (size_t)channels * 2);
-        A.bufs[i]->mAudioDataByteSize = FRAMES_PER_BUF * (UInt32)channels * 2;
+        AudioQueueAllocateBuffer(A.q, FRAMES_PER_BUF * OUT_CHANNELS * 2, &A.bufs[i]);
+        memset(A.bufs[i]->mAudioData, 0, FRAMES_PER_BUF * OUT_CHANNELS * 2);
+        A.bufs[i]->mAudioDataByteSize = FRAMES_PER_BUF * OUT_CHANNELS * 2;
         AudioQueueEnqueueBuffer(A.q, A.bufs[i], 0, NULL);
     }
     st = AudioQueueStart(A.q, NULL);
     if (st != noErr) { tl_log_line("audio: AudioQueueStart failed (%d)", (int)st); return false; }
-    tl_log_line("audio: output running, %d Hz, %d channel(s)", rate, channels);
+    tl_log_line("audio: output running, %d Hz, %d channel(s), independent source mixing", OUT_RATE, OUT_CHANNELS);
     return true;
 }
 
@@ -76,53 +126,34 @@ static void sleep_for(int frames, int rate)
     nanosleep(&ts, NULL);
 }
 
-static void ring_write(const int16_t *samples, int frames, int channels, int rate);
-
-/*
- * The mixer's write. A game mixing at a low rate (Unity's FMOD runs at 24 kHz) is played at twice that: each frame, then the
- * point halfway to the next. The iPhone played Subway Surfers' 24 kHz output high-pitched and broken while the same samples
- * were right on a Mac, and every game that sounds right there runs at 44.1 or 48 kHz -- so the queue is only ever opened
- * at one of those.
- */
+/* A streaming resampler per source preserves pitch and duration even when
+ * simultaneous writers use different rates. The phase survives write boundaries. */
 static void host_write(const int16_t *samples, int frames, int channels, int rate)
 {
-    if (rate > 0 && rate * 2 <= 48000 && channels > 0 && channels <= 2 && frames > 0) {
-        static int16_t prev[2];
-        static bool have_prev;
-        int16_t *up = malloc((size_t)frames * 2 * (size_t)channels * sizeof(int16_t));
-        if (up) {
-            for (int f = 0; f < frames; f++)
-                for (int c = 0; c < channels; c++) {
-                    int16_t cur = samples[(size_t)f * channels + c];
-                    int16_t before = f > 0 ? samples[(size_t)(f - 1) * channels + c] : (have_prev ? prev[c] : cur);
-                    up[(size_t)(2 * f) * channels + c] = (int16_t)(((int)before + cur) / 2);
-                    up[(size_t)(2 * f + 1) * channels + c] = cur;
-                }
-            for (int c = 0; c < channels; c++) prev[c] = samples[(size_t)(frames - 1) * channels + c];
-            have_prev = true;
-            ring_write(up, frames * 2, channels, rate * 2);
-            free(up);
-            return;
-        }
-    }
-    ring_write(samples, frames, channels, rate);
-}
-
-/* Copy into the ring, blocking while it is full (that is the pacing). */
-static void ring_write(const int16_t *samples, int frames, int channels, int rate)
-{
+    if (!samples || frames <= 0 || rate <= 0 || channels < 1 || channels > 2) return;
+    audio_source *s = writer_source();
+    if (!s) { sleep_for(frames, rate); return; }
     pthread_mutex_lock(&A.mu);
-    if (!A.q && !A.failed) { if (!open_queue(rate, channels)) A.failed = true; }
-    if (A.failed || channels != A.channels) { pthread_mutex_unlock(&A.mu); sleep_for(frames, rate); return; }
-    int done = 0;
-    while (done < frames) {
-        while (A.count >= RING_FRAMES || A.paused) pthread_cond_wait(&A.cv, &A.mu);
-        size_t room = RING_FRAMES - A.count, n = (size_t)(frames - done) < room ? (size_t)(frames - done) : room;
-        size_t tail = (A.head + A.count) % RING_FRAMES;
-        for (size_t i = 0; i < n; i++)
-            memcpy(&A.ring[((tail + i) % RING_FRAMES) * (size_t)channels], &samples[(size_t)(done + (int)i) * (size_t)channels], (size_t)channels * sizeof(int16_t));
-        A.count += n;
-        done += (int)n;
+    if (!A.q && !A.failed) { if (!open_queue()) A.failed = true; }
+    if (A.failed) { pthread_mutex_unlock(&A.mu); sleep_for(frames, rate); return; }
+    if (s->rate != rate || s->channels != channels) {
+        s->phase = 0; s->have_prev = false;
+        s->rate = rate; s->channels = channels;
+    }
+    for (int f = 0; f < frames; f++) {
+        int16_t cur[2] = { samples[(size_t)f * channels], samples[(size_t)f * channels + (channels == 1 ? 0 : 1)] };
+        if (!s->have_prev) { memcpy(s->prev, cur, sizeof(cur)); s->have_prev = true; }
+        while (s->phase < OUT_RATE) {
+            while (s->count >= RING_FRAMES || A.paused) pthread_cond_wait(&A.cv, &A.mu);
+            size_t tail = (s->head + s->count) % RING_FRAMES;
+            for (int c = 0; c < OUT_CHANNELS; c++)
+                s->ring[tail * OUT_CHANNELS + c] = (int16_t)(s->prev[c] +
+                    ((int64_t)cur[c] - s->prev[c]) * (int64_t)s->phase / OUT_RATE);
+            s->count++; s->written++;
+            s->phase += (uint64_t)rate;
+        }
+        s->phase -= OUT_RATE;
+        memcpy(s->prev, cur, sizeof(cur));
     }
     pthread_mutex_unlock(&A.mu);
 }

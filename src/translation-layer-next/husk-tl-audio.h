@@ -4,8 +4,8 @@
  *
  * Android audio engines (FMOD here) write interleaved 16-bit samples from a thread of their own and
  * expect each write to block until the audio has made room, which paces the mixer. This is that
- * sink, over AudioQueue (the same on macOS and iOS): a short ring the mixer fills and the audio
- * hardware drains.
+ * sink, over AudioQueue (the same on macOS and iOS): each writer has a short ring, resampled to
+ * the device rate, and the audio callback mixes all sources on the same playback clock.
  */
 #ifndef HUSK_TL_AUDIO_H
 #define HUSK_TL_AUDIO_H

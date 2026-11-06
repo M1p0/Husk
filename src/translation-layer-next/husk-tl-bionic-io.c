@@ -858,10 +858,22 @@ static void fill_stat(guest_stat *g, const struct stat *s)
 }
 static int b_fstat(int fd, guest_stat *g);
 #define fstat_guest_fd b_fstat
+static bool synth_stat(const char *p, guest_stat *g)
+{
+    char content[8192];
+    if (!p) return false;
+    /* FileStream checks the parent directory before opening /proc/cpuinfo. */
+    bool proc_root = !strcmp(p, "/proc");
+    if (!proc_root && !synth_content(p, content, sizeof(content))) return false;
+    memset(g, 0, sizeof(*g));
+    g->st_mode = proc_root ? S_IFDIR | 0555 : S_IFREG | 0444;
+    g->st_nlink = 1;
+    return true;
+}
 static int b_stat(const char *p, guest_stat *g)
 {
-    char b[1024], c[8192]; struct stat s;
-    if (synth_content(p, c, sizeof(c))) { memset(g, 0, sizeof(*g)); g->st_mode = S_IFREG | 0444; g->st_nlink = 1; return 0; }
+    char b[1024]; struct stat s;
+    if (synth_stat(p, g)) return 0;
     jar_entry jar;
     if (jar_lookup(p, &jar)) {
         ftrace("stat", p, jar.found ? 0 : -1, jar.found ? 0 : ENOENT);
@@ -887,6 +899,8 @@ static int b_stat(const char *p, guest_stat *g)
 static int b_lstat(const char *p, guest_stat *g)
 {
     char b[1024]; struct stat s;
+    /* Virtual proc/sys entries have no host pathname or symlink to follow. */
+    if (synth_stat(p, g)) return 0;
     if (p && strstr(p, "jar:file:")) return b_stat(p, g);
     /* /proc/self/exe is a link (to app_process64, as readlink says): Dart finds its own executable through it, and its code assumes a link */
     if (is_proc_exe(p)) {

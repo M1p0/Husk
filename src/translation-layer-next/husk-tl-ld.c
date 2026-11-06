@@ -762,9 +762,33 @@ size_t tl_ld_maps(char *buf, size_t n, const char *libdir)
     for (int i = 0; i < nlibs_acq() && k + 200 < n; i++) {
         tl_lib *L = G.libs[i];
         if (L->state < 2) continue;
-        uintptr_t lo = (uintptr_t)L->rx, hi = lo + L->npages * PAGE;
-        k += (size_t)snprintf(buf + k, n - k, "%lx-%lx r-xp 00000000 fd:00 %d %s/%s\n", (unsigned long)lo, (unsigned long)hi, 4000 + i,
-                              libdir, L->soname[0] ? L->soname : base_name(L->name));
+        /* ARM32's translator does not retain ELF64 program headers. Keep its
+         * existing image mapping until it can publish guest segment metadata. */
+        elf_phdr fallback = { .p_type = PT_LOAD_, .p_flags = PF_R_ | PF_X_,
+            .p_vaddr = L->base_vaddr, .p_memsz = L->npages * PAGE, .p_align = PAGE };
+        const elf_phdr *phdr = L->phnum ? L->phdr : &fallback;
+        unsigned phnum = L->phnum ? L->phnum : 1;
+        /* Unwinders derive ELF PCs from each mapping's file offset and load
+         * bias. One image-sized executable mapping loses the PT_LOAD layout
+         * when an executable segment's vaddr differs from its file offset. */
+        for (unsigned j = 0; j < phnum && k + 200 < n; j++) {
+            const elf_phdr *p = &phdr[j];
+            if (p->p_type != PT_LOAD_ || !p->p_memsz) continue;
+            uint64_t page = p->p_align >= PAGE ? PAGE : 4096;
+            uint64_t start = p->p_vaddr & ~(page - 1);
+            uint64_t end = (p->p_vaddr + p->p_memsz + page - 1) & ~(page - 1);
+            uint64_t offset = p->p_offset - (p->p_vaddr - start);
+            uintptr_t lo = (uintptr_t)L->rx + start - L->base_vaddr;
+            uintptr_t hi = (uintptr_t)L->rx + end - L->base_vaddr;
+            int written = snprintf(buf + k, n - k, "%lx-%lx %c%c%cp %08llx fd:00 %d %s/%s\n",
+                                   (unsigned long)lo, (unsigned long)hi,
+                                   (p->p_flags & PF_R_) ? 'r' : '-', (p->p_flags & PF_W_) ? 'w' : '-',
+                                   (p->p_flags & PF_X_) ? 'x' : '-', (unsigned long long)offset, 4000 + i,
+                                   libdir, L->soname[0] ? L->soname : base_name(L->name));
+            if (written < 0) break;
+            if ((size_t)written >= n - k) { k = n - 1; break; }
+            k += (size_t)written;
+        }
     }
     pthread_mutex_unlock(&G.lock);
     return k;
