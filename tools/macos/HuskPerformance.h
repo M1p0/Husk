@@ -25,7 +25,6 @@ static NSString *husk_performance_bytes(uint64_t bytes)
 @property HuskProcessSampler *sampler;
 @property NSArray<HuskProcessMetrics *> *processes;
 @property NSTableView *processTable;
-@property NSTextField *coverage;
 - (instancetype)initWithName:(NSString *)name;
 - (void)showForWindow:(NSWindow *)parent;
 - (void)refresh;
@@ -117,18 +116,7 @@ static NSString *husk_performance_bytes(uint64_t bytes)
     [scroll.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     [scroll.heightAnchor constraintGreaterThanOrEqualToConstant:150].active = YES;
     [scroll setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
-    self.coverage = [NSTextField wrappingLabelWithString:@""];
-    self.coverage.font = [NSFont systemFontOfSize:11];
-    self.coverage.textColor = NSColor.secondaryLabelColor;
-    [stack addArrangedSubview:self.coverage];
-    [self.coverage.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    NSTextField *note = [NSTextField wrappingLabelWithString:
-        @"每秒更新，含此 App 的子进程及可确认归属的 WebKit 辅助进程。CPU 100% = 一个核心。\n内存为各进程记账之和；FPS 为渲染提交速率，静止时可为 0，不含原生 WebView。"];
-    note.font = [NSFont systemFontOfSize:11];
-    note.textColor = NSColor.secondaryLabelColor;
-    [stack addArrangedSubview:note];
-    [note.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    [note.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor constant:-16].active = YES;
+    [scroll.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor constant:-16].active = YES;
     return self;
 }
 - (void)showForWindow:(NSWindow *)parent
@@ -176,9 +164,6 @@ static NSString *husk_performance_bytes(uint64_t bytes)
     self.values[@"resident"].stringValue = memoryCount ? [memoryPrefix stringByAppendingString:husk_performance_bytes(resident)] : @"—";
     self.values[@"threads"].stringValue = threadCount ? [NSString stringWithFormat:@"%@%d", threadPrefix, threads] : @"—";
     self.values[@"processes"].stringValue = [NSString stringWithFormat:@"%@%lu", discovered ? @"" : @"≥ ", (unsigned long)count];
-    self.coverage.stringValue = !discovered ? @"进程归属查询不完整，合计仅包含已确认并读到的部分（≥）。" :
-        cpuCount < count || memoryCount < count || threadCount < count ?
-        @"部分进程读数尚不可用（—），对应合计仅包含已读部分（≥）。" : @"已汇总下列全部进程。";
     [self.processTable reloadData];
 
     HuskRenderMetrics render = self.readRendering ? self.readRendering() : (HuskRenderMetrics){0};
