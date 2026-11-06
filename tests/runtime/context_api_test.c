@@ -299,7 +299,7 @@ int main(int argc, char **argv)
     puts("PASS: dynamic entry point, ABI negotiation and profile capabilities");
 
     const char *temporary = getenv("TMPDIR");
-    REQUIRE(temporary && !strncmp(temporary, "/Users/m1p0/Developer/temp/", sizeof("/Users/m1p0/Developer/temp/") - 1));
+    REQUIRE(temporary && temporary[0] == '/');
     int root_length = snprintf(g_root, sizeof(g_root), "%s/husk-runtime-context-XXXXXX", temporary);
     REQUIRE(root_length > 0 && (size_t)root_length < sizeof(g_root));
     REQUIRE(mkdtemp(g_root) != NULL);

@@ -60,7 +60,7 @@ Jasmine 动态复测与静态对照的 PNG SHA256 均为：
 
 以下是本工作区的输出，未随源码提交：
 
-按临时目录要求，下面原 `build/` 路径的证据已迁移到 `/Users/m1p0/Developer/temp/codex/Husk/macos-independent-apps-30fcdbd9/evidence/legacy-build/`；对应日志位于其 `logs/`，逐项迁移清单位于任务目录 `logs/project-temp-transfers.json`。
+按临时目录要求，下面原 `build/` 路径的证据已迁移到 `$HUSK_TASK_ROOT/macos-independent-apps-30fcdbd9/evidence/legacy-build/`；对应日志位于其 `logs/`，逐项迁移清单位于任务目录 `logs/project-temp-transfers.json`。
 
 - 动态首轮：`build/apk-diagnostics-20261106-first/results.json`。
 - 动态复测：`build/apk-diagnostics-20261106-repeat/results.json`。
@@ -76,6 +76,7 @@ Jasmine 动态复测与静态对照的 PNG SHA256 均为：
 先按 [M1 文档](09-macos-runtime-m1.md)构建 Runtime。输出目录必须是新的目录；图形库路径需在本机实际存在且为匹配的 macOS arm64 库对：
 
 ```sh
+export HUSK_TASK_ROOT="/absolute/path/to/husk-tasks"
 export HUSK_TASK_TMPDIR="$(python3 -B tools/task_paths.py apk-diagnostics)"
 export TMPDIR="$HUSK_TASK_TMPDIR/tmp" TMP="$HUSK_TASK_TMPDIR/tmp" TEMP="$HUSK_TASK_TMPDIR/tmp"
 export PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX="$HUSK_TASK_TMPDIR/tmp/pycache"

@@ -12,15 +12,15 @@
 
 后续窗口尺寸修复发布 `macos-app-resize-20261106-v1`，同为 407 个 artifact；构建基线为 `ffb31ed5e1fe9117e85ab60c4c77162b572755c2` 加本次工作区修改，native 源码摘要为 `6d17dd624e32e1f5c15980dbd5f624ab44ac71ac747a79557b262f0141eea2fe`。已更新 Jasmine、Pikapika、鸣潮和图形安装器捆绑的宿主，严格签名与 APK 内容摘要通过。已运行的旧进程保持其原版本，需要完全退出重开。
 
-窗口修复新增验收：五种 AppKit 尺寸下的 drawable/Runtime 通知/输入与覆盖层；真实 Java fixture 的 EGL 帧尺寸、DisplayMetrics/Configuration、全宽原生 WebView 与点击；Jasmine 和 Pikapika 的 `720×1280 → 1520×1280 → 1000×1560 → 720×1280` 实际帧及布局变化。最终从正式安装位置启动、使用默认 Runtime 再次通过宽窗口验证，Pikapika 点击重排后的“7”按钮正确显示 7。Java 框架回归、app ABI 前缀兼容和 ASan NativeWindow/EGL 引用回归通过。证据在 `/Users/m1p0/Developer/temp/codex/Husk/window-resize-b7330d2e/evidence/`，包含截图、日志、结果与更新前宿主备份。鸣潮只验证宿主更新和签名，未进行游戏界面验收；下文的完整版本切换、后台与业务路径验收仍对应此前的 closefix 版本。
+窗口修复新增验收：五种 AppKit 尺寸下的 drawable/Runtime 通知/输入与覆盖层；真实 Java fixture 的 EGL 帧尺寸、DisplayMetrics/Configuration、全宽原生 WebView 与点击；Jasmine 和 Pikapika 的 `720×1280 → 1520×1280 → 1000×1560 → 720×1280` 实际帧及布局变化。最终从正式安装位置启动、使用默认 Runtime 再次通过宽窗口验证，Pikapika 点击重排后的“7”按钮正确显示 7。Java 框架回归、app ABI 前缀兼容和 ASan NativeWindow/EGL 引用回归通过。证据在 `$HUSK_TASK_ROOT/window-resize-b7330d2e/evidence/`，包含截图、日志、结果与更新前宿主备份。鸣潮只验证宿主更新和签名，未进行游戏界面验收；下文的完整版本切换、后台与业务路径验收仍对应此前的 closefix 版本。
 
 性能窗口追加验收：标题栏按钮、单窗口/单定时器、CPU 单核实测（约 100%）、速率与计数重置、缩放尺寸、关闭停止采样和重开通过；浅色/深色和最小窗口的 AppKit 视图渲染已复核。Jasmine/Pikapika 的独立测试副本使用默认 Runtime 实际渲染后，打开、重复打开、关闭和重开指标窗口通过，退出码均 0；真实窗口截图已复核。大型 APK 退出时原生线程保留到进程结束的行为仍在，旧 Jasmine 宿主对照复现同样的状态记录，没有把它列为内部线程收拢成功。
 
-已将性能宿主更新到正式 Jasmine、Pikapika、鸣潮及图形安装器；采用完整签名包原子交换，已运行的进程继续持有原有映像。严格签名、宿主代码一致性、安装配置和原 APK 摘要核对通过，无需更换 Runtime。鸣潮未进行性能窗口的游戏内验收。证据与回退备份保存在 `/Users/m1p0/Developer/temp/codex/Husk/performance-window-fd0ed40e/evidence/`，其中 `real-apps-final/results.json` 为双 APK 验收，`old-host-baseline/results.json` 为退出行为对照，`release-inventory.json` 记录正式安装位置与备份。
+已将性能宿主更新到正式 Jasmine、Pikapika、鸣潮及图形安装器；采用完整签名包原子交换，已运行的进程继续持有原有映像。严格签名、宿主代码一致性、安装配置和原 APK 摘要核对通过，无需更换 Runtime。鸣潮未进行性能窗口的游戏内验收。证据与回退备份保存在 `$HUSK_TASK_ROOT/performance-window-fd0ed40e/evidence/`，其中 `real-apps-final/results.json` 为双 APK 验收，`old-host-baseline/results.json` 为退出行为对照，`release-inventory.json` 记录正式安装位置与备份。
 
 性能窗口后续加入所属进程汇总与明细：父进程链覆盖普通子孙进程，系统 responsibility 关系覆盖由 launchd 启动的 WebKit 等辅助进程；不把宿主的终端/IDE 祖先及其其他 App 一并计入。各进程单独计算 CPU 速率，PID 复用重建基线。原生回归通过真实子孙进程的 CPU/32 MiB 内存、同二进制但无归属关系的进程排除、单核约 100%、进程退出、真实 WebKit、读数不可用与部分合计提示，以及窗口生命周期和尺寸回归。浅色、深色与最小指标窗口渲染已复核。Jasmine 的真实窗口显示所属 WebKit WebContent/Networking/GPU 等进程与合计，Pikapika 同样通过明细和指标窗口关闭/重开检查；不代表登录、内容业务或长期内存验收。
 
-本次已再次以完整签名包原子交换更新正式 Jasmine、Pikapika、鸣潮和图形安装器捆绑的宿主。宿主代码一致性、严格签名、其余资源/配置/APK 内容保持通过；安装器主程序代码段也保持一致。没有重建或选择其他 Runtime。已运行的 App 完全退出重开后生效，鸣潮仍仅验证包更新和签名。此次截图、测试日志、发布清单和旧包回退备份在 `/Users/m1p0/Developer/temp/codex/Husk/performance-processes-34415e8c/evidence/`。
+本次已再次以完整签名包原子交换更新正式 Jasmine、Pikapika、鸣潮和图形安装器捆绑的宿主。宿主代码一致性、严格签名、其余资源/配置/APK 内容保持通过；安装器主程序代码段也保持一致。没有重建或选择其他 Runtime。已运行的 App 完全退出重开后生效，鸣潮仍仅验证包更新和签名。此次截图、测试日志、发布清单和旧包回退备份在 `$HUSK_TASK_ROOT/performance-processes-34415e8c/evidence/`。
 
 设计、运行方法与升级流程见[实现文档](11-macos-independent-apps.md)，整体架构与后续执行顺序见[设计](07-independent-app-runtime-design.md)和[执行方案](08-independent-app-runtime-execution-plan.md)。
 
@@ -79,7 +79,7 @@
 本机证据统一保存在：
 
 ```text
-/Users/m1p0/Developer/temp/codex/Husk/macos-independent-apps-30fcdbd9/
+$HUSK_TASK_ROOT/macos-independent-apps-30fcdbd9/
   logs/private-tmp-transfers.json
   logs/project-temp-transfers.json
   logs/runtime-release-regression.log
@@ -99,7 +99,7 @@
   evidence/native-window-temp-policy/results.log
 ```
 
-已核实归属的 20 项历史 `/private/tmp` 文件和目录，按原任务迁移到 `/Users/m1p0/Developer/temp/codex/Husk/recovered-husk-*/private-tmp/`，逐项来源与内容摘要见迁移清单。旧的项目内调试证据迁入本任务 `evidence/legacy-build/`，正式 App、Runtime 和源码留在项目。
+已核实归属的 20 项历史 `/private/tmp` 文件和目录，按原任务迁移到 `$HUSK_TASK_ROOT/recovered-husk-*/private-tmp/`，逐项来源与内容摘要见迁移清单。旧的项目内调试证据迁入本任务 `evidence/legacy-build/`，正式 App、Runtime 和源码留在项目。
 
 通过[实现文档](11-macos-independent-apps.md)设置统一任务环境后，可复现无需桌面的回归：
 

@@ -25,7 +25,7 @@ from install_apk import make_icon, publish_exclusive, sync_directory
 
 
 def main():
-    task_directory("apk-installer-build")
+    task = task_directory("apk-installer-build")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path.home() / "Applications/Husk APK Installer.app")
     parser.add_argument("--applications", type=Path, default=Path.home() / "Applications/Husk Apps")
@@ -52,6 +52,7 @@ def main():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / source, target)
         config = {"schema": 1, "python": str(Path(sys.executable).absolute()),
+                  "task_root": str(task.parent),
                   "runtime_store": str(options.runtime_store.expanduser().resolve(strict=True)),
                   "applications": str(options.applications.expanduser().absolute()),
                   "scan_roots": [str(ROOT / "build/macos-apps")]}

@@ -1,4 +1,8 @@
-"""Keep Codex build intermediates and test evidence in the user's task directory.
+"""Keep build intermediates and test evidence in an explicitly configured directory.
+
+Set HUSK_TASK_TMPDIR to an absolute task directory, or HUSK_TASK_ROOT to an
+absolute parent under which a new task directory can be created. No machine
+path or system temporary-directory fallback is assumed.
 
 Final source files, installed .apps and immutable Runtime versions remain in the
 project. Temporary staging must share their filesystem for atomic publication.
@@ -14,8 +18,6 @@ import re
 import secrets
 import stat
 
-TEMP_ROOT = Path("/Users/m1p0/Developer/temp")
-TASK_PARENT = TEMP_ROOT / "codex/Husk"
 _task: Path | None = None
 
 
@@ -47,6 +49,14 @@ def _private_directory_at(parent: int, name: str, path: Path) -> int:
 
 def task_directory(label: str = "macos") -> Path:
     global _task
+    configured_root = os.environ.get("HUSK_TASK_ROOT")
+    parent = Path(configured_root).expanduser() if configured_root else None
+    if parent is not None:
+        if not parent.is_absolute():
+            raise ValueError("HUSK_TASK_ROOT must be an absolute task parent directory")
+        parent = parent.resolve()
+        if parent == Path(parent.anchor):
+            raise ValueError("HUSK_TASK_ROOT must not be the filesystem root")
     if _task is not None:
         candidate = _task
     else:
@@ -56,12 +66,15 @@ def task_directory(label: str = "macos") -> Path:
             if not candidate.is_absolute():
                 raise ValueError("HUSK_TASK_TMPDIR must be an absolute task directory")
         else:
+            if parent is None:
+                raise ValueError("set HUSK_TASK_TMPDIR to an absolute task directory or HUSK_TASK_ROOT to its parent")
             safe_label = re.sub(r"[^A-Za-z0-9_-]", "-", label)[:24] or "macos"
-            candidate = TASK_PARENT / (safe_label + "-" + secrets.token_hex(4))
+            candidate = parent / (safe_label + "-" + secrets.token_hex(4))
     candidate = candidate.resolve()
-    parent = TASK_PARENT.resolve()
-    if candidate.parent != parent or candidate == parent:
-        raise ValueError(f"task directory must be a child of {TASK_PARENT}")
+    if candidate == Path(candidate.anchor):
+        raise ValueError("HUSK_TASK_TMPDIR must not be the filesystem root")
+    if parent is not None and candidate.parent != parent:
+        raise ValueError(f"task directory must be a child of HUSK_TASK_ROOT: {parent}")
     candidate.mkdir(parents=True, exist_ok=True, mode=0o700)
     scratch = candidate / "tmp"
     pycache = scratch / "pycache"

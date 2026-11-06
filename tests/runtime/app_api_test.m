@@ -59,7 +59,7 @@ int main(int argc, char **argv)
         const husk_runtime_api_v1 *base = base_getter(1, sizeof(husk_runtime_api_v1));
         supports_apps = !!(base->get_info()->capabilities & HUSK_RUNTIME_CAP_APK_LAUNCH);
         const char *temporary = getenv("TMPDIR");
-        REQUIRE(temporary && !strncmp(temporary, "/Users/m1p0/Developer/temp/", sizeof("/Users/m1p0/Developer/temp/") - 1));
+        REQUIRE(temporary && temporary[0] == '/');
         char temp[PATH_MAX];
         int length = snprintf(temp, sizeof(temp), "%s/husk-app-abi-XXXXXX", temporary);
         REQUIRE(length > 0 && (size_t)length < sizeof(temp));

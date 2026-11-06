@@ -2,7 +2,33 @@
 #import <AppKit/AppKit.h>
 #import <CoreServices/CoreServices.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#include <errno.h>
+#include <limits.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+/* Test outputs need not exist yet. Resolve their existing ancestors before
+ * checking containment, including symlinks in a parent of a new directory. */
+static NSString *testPath(NSString *path) {
+    if (!path.isAbsolutePath) return nil;
+    NSMutableArray<NSString *> *missing = [NSMutableArray new];
+    NSString *prefix = path;
+    for (;;) {
+        char resolved[PATH_MAX];
+        if (realpath(prefix.fileSystemRepresentation, resolved)) {
+            NSString *result = @(resolved);
+            for (NSString *part in missing.reverseObjectEnumerator) result = [result stringByAppendingPathComponent:part];
+            return result.stringByStandardizingPath;
+        }
+        if (errno != ENOENT) return nil;
+        struct stat info;
+        if (lstat(prefix.fileSystemRepresentation, &info) == 0) return nil; /* dangling symlink */
+        NSString *parent = prefix.stringByDeletingLastPathComponent;
+        if ([parent isEqual:prefix]) return nil;
+        [missing addObject:prefix.lastPathComponent];
+        prefix = parent;
+    }
+}
 
 static NSDictionary *readJSON(NSString *path) {
     NSData *data = [NSData dataWithContentsOfFile:path];
@@ -86,6 +112,8 @@ static int writeIcon(NSString *path) {
     NSString *engine = [self resource:@"engine/tools/macos/install_apk.py"];
     NSMutableDictionary *environment = NSProcessInfo.processInfo.environment.mutableCopy;
     environment[@"PYTHONDONTWRITEBYTECODE"] = @"1";
+    if (![environment[@"HUSK_TASK_TMPDIR"] length] && ![environment[@"HUSK_TASK_ROOT"] length] &&
+        [cfg[@"task_root"] isKindOfClass:NSString.class]) environment[@"HUSK_TASK_ROOT"] = cfg[@"task_root"];
     environment[@"HUSK_APPS_ROOTS"] = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:cfg[@"scan_roots"] ?: @[] options:0 error:NULL] encoding:NSUTF8StringEncoding];
     NSString *state = self.testRoot ?: [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Husk/Installer"];
     environment[@"HUSK_APPS_REGISTRY"] = [state stringByAppendingPathComponent:@"registry.json"];
@@ -423,13 +451,14 @@ int main(int argc, char **argv) {
             return registered || status || ![handler.path isEqual:bundle.path] ? 1 : 0;
         }
         Installer *delegate = [Installer new];
-        NSString *task = NSProcessInfo.processInfo.environment[@"HUSK_TASK_TMPDIR"].stringByResolvingSymlinksInPath;
+        NSString *task = testPath(NSProcessInfo.processInfo.environment[@"HUSK_TASK_TMPDIR"]);
         for (int i = 1; i < argc; i++) {
             NSString *key = @(argv[i]);
             if ([key isEqual:@"--no-activate"]) { delegate.noActivate = YES; continue; }
             if (([key isEqual:@"--test-root"] || [key isEqual:@"--test-control"]) && i + 1 < argc) {
-                NSString *path = [@(argv[++i]) stringByResolvingSymlinksInPath];
-                if (!task || ![task hasPrefix:@"/Users/m1p0/Developer/temp/codex/Husk/"] || ![path hasPrefix:[task stringByAppendingString:@"/"]]) return 2;
+                NSString *path = testPath(@(argv[++i]));
+                if (!task.isAbsolutePath || [task isEqual:@"/"] || !path.isAbsolutePath ||
+                    ![path hasPrefix:[task stringByAppendingString:@"/"]]) return 2;
                 if ([key isEqual:@"--test-root"]) delegate.testRoot = path; else delegate.testControl = path;
             } else return 2;
         }

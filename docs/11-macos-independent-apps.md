@@ -44,6 +44,7 @@ CPU 100% 表示占满一个核心，可高于 100%。统计包括当前 App、�
 先准备仓库已有的 `build/java-runtime`、`build/android-system` 与 Java 构建所需 JDK/R8。只重建 Java 框架可用：
 
 ```sh
+export HUSK_TASK_ROOT="/absolute/path/to/husk-tasks"
 export HUSK_TASK_TMPDIR="$(python3 -B tools/task_paths.py macos-apps)"
 export TMPDIR="$HUSK_TASK_TMPDIR/tmp" TMP="$HUSK_TASK_TMPDIR/tmp" TEMP="$HUSK_TASK_TMPDIR/tmp"
 export PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX="$HUSK_TASK_TMPDIR/tmp/pycache"
@@ -136,7 +137,9 @@ APK 明确调用 `exit(status)` 时，独立应用 profile 直接按该状态结
 
 普通窗口关闭时，本 profile 在停止阶段也不向原生文件 I/O 注入 `ECANCELED`，避免 Go/SQLite 把人为取消当成数据库故障并 panic。Java 入口和事件循环仍进入停止阶段；三秒内未收拢的原生工作保留到进程退出，由内核回收。宿主不复用进程、不卸载存活映像，也不能在进程结束前假定这些资源已归还。纯 Java/WebKit fixture 的两次内部收拢与大型 APK 的进程结束分别验收，具体结果见[验收记录](13-macos-release-validation.md)。
 
-所有本地验证的日志、截图、APK 快照、harness、编译中间文件与暂存发布目录都在 `/Users/m1p0/Developer/temp/codex/Husk/<任务名>-<随机标识>/`，由 `tools/task_paths.py` 统一管理并向子进程传递临时/缓存目录。正式源码、回归工具、安装后的 `.app` 和发布后的完整 Runtime 保留在项目约定位置。运行时的临时文件、匿名共享内存和 Unix socket 映射尊重显式临时目录；非法目录失败，不再回退到 `/tmp`。
+先将示例中的 `HUSK_TASK_ROOT` 替换为本机允许的绝对临时根目录，工具会在其中生成 `<任务名>-<随机标识>/`；也可直接设置 `HUSK_TASK_TMPDIR` 指定一个绝对任务目录。两者同时设置时，任务目录必须是该根目录的直接子目录。工具不内置个人路径，也不回退到系统临时目录；未配置时明确报错。
+
+所有本地验证的日志、截图、APK 快照、harness、编译中间文件与暂存发布目录都在配置的任务目录中，由 `tools/task_paths.py` 统一管理并向子进程传递临时/缓存目录。正式源码、回归工具、安装后的 `.app` 和发布后的完整 Runtime 保留在项目约定位置。运行时的临时文件、匿名共享内存和 Unix socket 映射尊重显式临时目录；非法目录失败，不再回退到 `/tmp`。验收文档中的历史证据路径以 `$HUSK_TASK_ROOT` 表示本机任务根目录。
 
 未来 iOS 复用 APK/DEX/ELF、Bionic/JNI、Java 框架、启动 ABI、完整版本清单、持有协议和验收场景；替换 AppKit 窗口/输入、系统注册/容器、签名/JIT、权限/后台及资源限制适配。macOS `.dylib` 和 ANGLE 必须重新编译成正确的 iOS 目标，不能直接拷贝。当前 Mac adapter 有明确平台编译约束；移植工作集中在宿主适配和实机能力验证。
 

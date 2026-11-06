@@ -1,6 +1,6 @@
 # macOS APK 安装器与应用管理
 
-日期：2026-11-06。安装器位于 `/Users/m1p0/Applications/Husk APK Installer.app`，显示名称为“Husk APK 安装器”。
+日期：2026-11-06。安装器位于 `~/Applications/Husk APK Installer.app`，显示名称为“Husk APK 安装器”。
 
 ## 使用
 
@@ -18,12 +18,15 @@ APK 默认打开方式已经设置。若以后被其他程序改变，可以在�
 ## 构建与依赖
 
 ```sh
+export HUSK_TASK_ROOT="/absolute/path/to/husk-tasks"
 python3 -B tools/macos/build_installer.py
 ```
 
+将示例根目录替换为本机允许的绝对临时目录，或设置 `HUSK_TASK_TMPDIR` 指定本次任务目录。构建时把任务父目录保存为安装器本机 `installer.json` 的 `task_root`；Finder 启动时据此向后端传入 `HUSK_TASK_ROOT`，无需在源码中写入个人目录。显式设置的任务环境变量优先。
+
 默认构建到当前用户 `~/Applications/Husk APK Installer.app`；已有路径不会被覆盖。可用 `--output` 指定新目录，`--applications` 设置此安装器安装应用的默认位置，`--runtime-store` 设置共享运行库位置。构建时可用 `--register-apk /absolute/path/sample.apk` 完成系统注册和默认关联，完成后会核对系统实际返回的默认程序。
 
-安装器自带 AppKit 程序、安装管理后端、通用 APK 图标和已编译的 `HuskAppHost`。日常安装不再编译启动器，也不需要源代码目录；仍需要配置中的本机 Python、macOS Command Line Tools 中的平台检查工具，以及完整的共享 Runtime store。当前配置使用 Homebrew 的稳定 `opt` Python 路径，避免固定到单个 Cellar 小版本。运行库位置仍为 `/Users/m1p0/Developer/Projects/Husk/build/macos-runtime`，必须保留；其默认版本选择规则与[独立 App 实现](11-macos-independent-apps.md)相同。
+安装器自带 AppKit 程序、安装管理后端、通用 APK 图标和已编译的 `HuskAppHost`。日常安装不再编译启动器，也不需要源代码目录；仍需要配置中的本机 Python、macOS Command Line Tools 中的平台检查工具，以及完整的共享 Runtime store。当前配置使用 Homebrew 的稳定 `opt` Python 路径，避免固定到单个 Cellar 小版本。共享运行库默认取仓库的 `build/macos-runtime`，打包时将实际绝对位置保存到本机配置，必须保留该目录；其默认版本选择规则与[独立 App 实现](11-macos-independent-apps.md)相同。
 
 管理目录登记保存在 `~/Library/Application Support/Husk/Installer/registry.json`。安装器不承载 APK 执行，也没有常驻运行库服务；查看列表不启动 APK。
 
@@ -55,7 +58,7 @@ python3 -B tools/macos/build_installer.py
 
 界面布局通过安装器自身 AppKit view 生成 PNG 并人工检查。这是原生视图渲染，未称为锁屏桌面的 WindowServer 截图。测试控制仅在显式传入任务目录内的测试路径后启用，测试模式不能卸载任务目录之外的应用。
 
-证据目录：`/Users/m1p0/Developer/temp/codex/Husk/apk-manager-6de9a421/`。
+证据目录：`$HUSK_TASK_ROOT/apk-manager-6de9a421/`。
 
 - `evidence/installer-acceptance-final/results.json`：完整管理回归。
 - `evidence/default-routing/results.json`：正式安装器、系统默认关联及真实文件打开事件。

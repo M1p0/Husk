@@ -37,8 +37,11 @@
 要求 Apple Silicon macOS、Xcode 工具、Python 3，以及已有的 `build/java-runtime`、`build/android-system`。从仓库根目录执行：
 
 ```sh
+export HUSK_TASK_ROOT="/absolute/path/to/husk-tasks"
 ./scripts/build_macos_runtime.sh
 ```
+
+将 `HUSK_TASK_ROOT` 替换为本机允许的绝对临时根目录；也可直接设置 `HUSK_TASK_TMPDIR` 指定一个任务目录。工具不内置个人路径，未配置时明确报错。
 
 默认使用唯一 build ID，打印实际发布目录。也可指定新版本：
 
