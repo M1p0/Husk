@@ -18,6 +18,10 @@
 
 已将性能宿主更新到正式 Jasmine、Pikapika、鸣潮及图形安装器；采用完整签名包原子交换，已运行的进程继续持有原有映像。严格签名、宿主代码一致性、安装配置和原 APK 摘要核对通过，无需更换 Runtime。鸣潮未进行性能窗口的游戏内验收。证据与回退备份保存在 `/Users/m1p0/Developer/temp/codex/Husk/performance-window-fd0ed40e/evidence/`，其中 `real-apps-final/results.json` 为双 APK 验收，`old-host-baseline/results.json` 为退出行为对照，`release-inventory.json` 记录正式安装位置与备份。
 
+性能窗口后续加入所属进程汇总与明细：父进程链覆盖普通子孙进程，系统 responsibility 关系覆盖由 launchd 启动的 WebKit 等辅助进程；不把宿主的终端/IDE 祖先及其其他 App 一并计入。各进程单独计算 CPU 速率，PID 复用重建基线。原生回归通过真实子孙进程的 CPU/32 MiB 内存、同二进制但无归属关系的进程排除、单核约 100%、进程退出、真实 WebKit、读数不可用与部分合计提示，以及窗口生命周期和尺寸回归。浅色、深色与最小指标窗口渲染已复核。Jasmine 的真实窗口显示所属 WebKit WebContent/Networking/GPU 等进程与合计，Pikapika 同样通过明细和指标窗口关闭/重开检查；不代表登录、内容业务或长期内存验收。
+
+本次已再次以完整签名包原子交换更新正式 Jasmine、Pikapika、鸣潮和图形安装器捆绑的宿主。宿主代码一致性、严格签名、其余资源/配置/APK 内容保持通过；安装器主程序代码段也保持一致。没有重建或选择其他 Runtime。已运行的 App 完全退出重开后生效，鸣潮仍仅验证包更新和签名。此次截图、测试日志、发布清单和旧包回退备份在 `/Users/m1p0/Developer/temp/codex/Husk/performance-processes-34415e8c/evidence/`。
+
 设计、运行方法与升级流程见[实现文档](11-macos-independent-apps.md)，整体架构与后续执行顺序见[设计](07-independent-app-runtime-design.md)和[执行方案](08-independent-app-runtime-execution-plan.md)。
 
 ## 已完成检查

@@ -1,33 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Host-only metrics. No guest calls, GPU readbacks or per-thread Mach ports. */
 #import <AppKit/AppKit.h>
-#include <mach/mach.h>
-#include <mach/mach_time.h>
-#include <libproc.h>
-#include <math.h>
+#include "HuskProcessMetrics.h"
 
 typedef struct {
     uint64_t frames;
     NSSize pixels;
     BOOL running;
 } HuskRenderMetrics;
-
-typedef struct {
-    double time;
-    uint64_t value;
-    BOOL valid;
-} HuskPerformanceCounter;
-
-/* A missing sample, counter reset or non-positive interval starts a new baseline. */
-static double husk_performance_rate(HuskPerformanceCounter *previous, double now,
-                                    uint64_t value, BOOL available)
-{
-    double rate = NAN;
-    if (available && previous->valid && now > previous->time && value >= previous->value)
-        rate = (double)(value - previous->value) / (now - previous->time);
-    *previous = (HuskPerformanceCounter){now, value, available};
-    return rate;
-}
 
 static NSString *husk_performance_bytes(uint64_t bytes)
 {
@@ -36,13 +16,16 @@ static NSString *husk_performance_bytes(uint64_t bytes)
                         [NSString stringWithFormat:@"%.1f MiB", mib];
 }
 
-@interface HuskPerformance : NSWindowController <NSWindowDelegate> {
-    HuskPerformanceCounter _cpu, _frames;
-    double _secondsPerTick;
+@interface HuskPerformance : NSWindowController <NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate> {
+    HuskPerformanceCounter _frames;
 }
 @property (copy) HuskRenderMetrics (^readRendering)(void);
 @property NSTimer *timer;
 @property NSMutableDictionary<NSString *, NSTextField *> *values;
+@property HuskProcessSampler *sampler;
+@property NSArray<HuskProcessMetrics *> *processes;
+@property NSTableView *processTable;
+@property NSTextField *coverage;
 - (instancetype)initWithName:(NSString *)name;
 - (void)showForWindow:(NSWindow *)parent;
 - (void)refresh;
@@ -51,8 +34,8 @@ static NSString *husk_performance_bytes(uint64_t bytes)
 @implementation HuskPerformance
 - (instancetype)initWithName:(NSString *)name
 {
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 360, 408)
-        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 760, 650)
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
         backing:NSBackingStoreBuffered defer:NO];
     self = [super initWithWindow:window];
     if (!self) return nil;
@@ -61,9 +44,9 @@ static NSString *husk_performance_bytes(uint64_t bytes)
     window.delegate = self;
     window.tabbingMode = NSWindowTabbingModeDisallowed;
     window.collectionBehavior = NSWindowCollectionBehaviorFullScreenAuxiliary;
-    mach_timebase_info_data_t timebase;
-    mach_timebase_info(&timebase);
-    _secondsPerTick = (double)timebase.numer / timebase.denom / 1e9;
+    window.contentMinSize = NSMakeSize(720, 600);
+    self.sampler = [HuskProcessSampler new];
+    self.processes = @[];
     self.values = [NSMutableDictionary dictionary];
 
     NSStackView *stack = [NSStackView new];
@@ -76,7 +59,7 @@ static NSString *husk_performance_bytes(uint64_t bytes)
         [stack.leadingAnchor constraintEqualToAnchor:window.contentView.leadingAnchor constant:20],
         [stack.trailingAnchor constraintEqualToAnchor:window.contentView.trailingAnchor constant:-20],
         [stack.topAnchor constraintEqualToAnchor:window.contentView.topAnchor constant:20]]];
-    NSTextField *heading = [NSTextField labelWithString:@"实时性能"];
+    NSTextField *heading = [NSTextField labelWithString:@"实时性能 · 合计"];
     heading.font = [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold];
     [stack addArrangedSubview:heading];
     NSTextField *identity = [NSTextField labelWithString:[NSString stringWithFormat:@"%@ · PID %d", name, getpid()]];
@@ -85,9 +68,10 @@ static NSString *husk_performance_bytes(uint64_t bytes)
     [stack addArrangedSubview:identity];
     [identity.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
 
-    NSArray *rows = @[@[@"cpu", @"CPU 使用率"], @[@"fps", @"渲染 FPS"],
-        @[@"footprint", @"内存占用"], @[@"resident", @"驻留内存"],
-        @[@"threads", @"线程数"], @[@"size", @"渲染尺寸"], @[@"frames", @"累计渲染帧"]];
+    NSArray *rows = @[@[@"cpu", @"CPU 总使用率"],
+        @[@"footprint", @"内存总占用"], @[@"resident", @"驻留内存合计"],
+        @[@"threads", @"总线程数"], @[@"processes", @"进程数"],
+        @[@"fps", @"渲染 FPS"], @[@"size", @"渲染尺寸"], @[@"frames", @"累计渲染帧"]];
     for (NSArray *row in rows) {
         NSTextField *label = [NSTextField labelWithString:row[1]];
         label.textColor = NSColor.secondaryLabelColor;
@@ -103,21 +87,54 @@ static NSString *husk_performance_bytes(uint64_t bytes)
         [line.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
         self.values[row[0]] = value;
     }
-    self.values[@"footprint"].toolTip = @"系统记录的当前进程 physical footprint，含压缩内存等记账。";
-    self.values[@"resident"].toolTip = @"当前进程驻留在物理内存中的页。";
+    self.values[@"footprint"].toolTip = @"此 App 各进程的 physical footprint 相加，含压缩内存等系统记账；不是去重后的独占物理内存。";
+    self.values[@"resident"].toolTip = @"各进程驻留内存相加，共享页可能重复计入。";
+    NSTextField *detail = [NSTextField labelWithString:@"各进程明细"];
+    detail.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+    [stack addArrangedSubview:detail];
+    self.processTable = [NSTableView new];
+    self.processTable.dataSource = self;
+    self.processTable.delegate = self;
+    self.processTable.rowHeight = 26;
+    self.processTable.usesAlternatingRowBackgroundColors = YES;
+    self.processTable.columnAutoresizingStyle = NSTableViewFirstColumnOnlyAutoresizingStyle;
+    NSArray *columns = @[@[@"name", @"进程", @220], @[@"pid", @"PID", @64],
+        @[@"cpu", @"CPU", @78], @[@"footprint", @"内存占用", @104],
+        @[@"resident", @"驻留内存", @104], @[@"threads", @"线程", @60]];
+    for (NSArray *spec in columns) {
+        NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:spec[0]];
+        column.title = spec[1];
+        column.width = [spec[2] doubleValue];
+        column.minWidth = [spec[0] isEqual:@"name"] ? 160 : column.width;
+        column.resizingMask = [spec[0] isEqual:@"name"] ? NSTableColumnAutoresizingMask : NSTableColumnNoResizing;
+        [self.processTable addTableColumn:column];
+    }
+    NSScrollView *scroll = [NSScrollView new];
+    scroll.hasVerticalScroller = YES;
+    scroll.borderType = NSBezelBorder;
+    scroll.documentView = self.processTable;
+    [stack addArrangedSubview:scroll];
+    [scroll.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    [scroll.heightAnchor constraintGreaterThanOrEqualToConstant:150].active = YES;
+    [scroll setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
+    self.coverage = [NSTextField wrappingLabelWithString:@""];
+    self.coverage.font = [NSFont systemFontOfSize:11];
+    self.coverage.textColor = NSColor.secondaryLabelColor;
+    [stack addArrangedSubview:self.coverage];
+    [self.coverage.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     NSTextField *note = [NSTextField wrappingLabelWithString:
-        @"每秒更新，仅统计当前 App 进程，不含 WebKit 子进程。\nCPU 100% = 一个核心。FPS 为渲染提交速率，静止时可为 0，不含原生 WebView。"];
+        @"每秒更新，含此 App 的子进程及可确认归属的 WebKit 辅助进程。CPU 100% = 一个核心。\n内存为各进程记账之和；FPS 为渲染提交速率，静止时可为 0，不含原生 WebView。"];
     note.font = [NSFont systemFontOfSize:11];
     note.textColor = NSColor.secondaryLabelColor;
     [stack addArrangedSubview:note];
     [note.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
-    [note.bottomAnchor constraintLessThanOrEqualToAnchor:window.contentView.bottomAnchor constant:-16].active = YES;
+    [note.bottomAnchor constraintEqualToAnchor:window.contentView.bottomAnchor constant:-16].active = YES;
     return self;
 }
 - (void)showForWindow:(NSWindow *)parent
 {
     if (!self.timer) {
-        _cpu = (HuskPerformanceCounter){0};
+        [self.sampler reset];
         _frames = (HuskPerformanceCounter){0};
         [self refresh];
         __weak HuskPerformance *weakSelf = self;
@@ -139,21 +156,30 @@ static NSString *husk_performance_bytes(uint64_t bytes)
 - (void)refresh
 {
     double now = NSProcessInfo.processInfo.systemUptime;
-    task_absolutetime_info_data_t cpu = {0};
-    mach_msg_type_number_t count = TASK_ABSOLUTETIME_INFO_COUNT;
-    BOOL cpuOK = task_info(mach_task_self(), TASK_ABSOLUTETIME_INFO, (task_info_t)&cpu, &count) == KERN_SUCCESS;
-    double cpuRate = husk_performance_rate(&_cpu, now, cpu.total_user + cpu.total_system, cpuOK);
-    self.values[@"cpu"].stringValue = isfinite(cpuRate) ?
-        [NSString stringWithFormat:@"%.1f%%", cpuRate * _secondsPerTick * 100] : @"—";
-
-    task_vm_info_data_t vm = {0};
-    count = TASK_VM_INFO_REV1_COUNT;
-    BOOL vmOK = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vm, &count) == KERN_SUCCESS && count >= TASK_VM_INFO_REV1_COUNT;
-    self.values[@"footprint"].stringValue = vmOK ? husk_performance_bytes(vm.phys_footprint) : @"—";
-    self.values[@"resident"].stringValue = vmOK ? husk_performance_bytes(vm.resident_size) : @"—";
-    struct proc_taskinfo task = {0};
-    BOOL taskOK = proc_pidinfo(getpid(), PROC_PIDTASKINFO, 0, &task, sizeof(task)) == sizeof(task);
-    self.values[@"threads"].stringValue = taskOK ? [NSString stringWithFormat:@"%d", task.pti_threadnum] : @"—";
+    self.processes = [self.sampler sample];
+    double cpu = 0;
+    uint64_t footprint = 0, resident = 0;
+    int threads = 0;
+    NSUInteger cpuCount = 0, memoryCount = 0, threadCount = 0;
+    for (HuskProcessMetrics *process in self.processes) {
+        if (isfinite(process.cpuPercent)) { cpu += process.cpuPercent; cpuCount++; }
+        if (process.usageAvailable) { footprint += process.footprint; resident += process.resident; memoryCount++; }
+        if (process.threadsAvailable) { threads += process.threads; threadCount++; }
+    }
+    NSUInteger count = self.processes.count;
+    BOOL discovered = self.sampler.discoveryComplete;
+    NSString *cpuPrefix = cpuCount == count && discovered ? @"" : @"≥ ";
+    NSString *memoryPrefix = memoryCount == count && discovered ? @"" : @"≥ ";
+    NSString *threadPrefix = threadCount == count && discovered ? @"" : @"≥ ";
+    self.values[@"cpu"].stringValue = cpuCount ? [NSString stringWithFormat:@"%@%.1f%%", cpuPrefix, cpu] : @"—";
+    self.values[@"footprint"].stringValue = memoryCount ? [memoryPrefix stringByAppendingString:husk_performance_bytes(footprint)] : @"—";
+    self.values[@"resident"].stringValue = memoryCount ? [memoryPrefix stringByAppendingString:husk_performance_bytes(resident)] : @"—";
+    self.values[@"threads"].stringValue = threadCount ? [NSString stringWithFormat:@"%@%d", threadPrefix, threads] : @"—";
+    self.values[@"processes"].stringValue = [NSString stringWithFormat:@"%@%lu", discovered ? @"" : @"≥ ", (unsigned long)count];
+    self.coverage.stringValue = !discovered ? @"进程归属查询不完整，合计仅包含已确认并读到的部分（≥）。" :
+        cpuCount < count || memoryCount < count || threadCount < count ?
+        @"部分进程读数尚不可用（—），对应合计仅包含已读部分（≥）。" : @"已汇总下列全部进程。";
+    [self.processTable reloadData];
 
     HuskRenderMetrics render = self.readRendering ? self.readRendering() : (HuskRenderMetrics){0};
     double fps = husk_performance_rate(&_frames, now, render.frames, render.running);
@@ -161,6 +187,32 @@ static NSString *husk_performance_bytes(uint64_t bytes)
     self.values[@"frames"].stringValue = render.running ? [NSString stringWithFormat:@"%llu", (unsigned long long)render.frames] : @"—";
     self.values[@"size"].stringValue = render.pixels.width > 0 && render.pixels.height > 0 ?
         [NSString stringWithFormat:@"%.0f × %.0f px", render.pixels.width, render.pixels.height] : @"—";
+}
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView
+{
+    (void)tableView;
+    return self.processes.count;
+}
+- (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row
+{
+    NSTextField *cell = [tableView makeViewWithIdentifier:column.identifier owner:self];
+    if (!cell) {
+        cell = [NSTextField labelWithString:@""];
+        cell.identifier = column.identifier;
+        cell.lineBreakMode = NSLineBreakByTruncatingTail;
+        cell.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
+        cell.alignment = [column.identifier isEqual:@"name"] ? NSTextAlignmentLeft : NSTextAlignmentRight;
+    }
+    HuskProcessMetrics *process = self.processes[row];
+    NSString *key = column.identifier;
+    if ([key isEqual:@"name"]) cell.stringValue = process.pid == getpid() ? [process.name stringByAppendingString:@"（主进程）"] : process.name;
+    else if ([key isEqual:@"pid"]) cell.stringValue = [NSString stringWithFormat:@"%d", process.pid];
+    else if ([key isEqual:@"cpu"]) cell.stringValue = isfinite(process.cpuPercent) ? [NSString stringWithFormat:@"%.1f%%", process.cpuPercent] : @"—";
+    else if ([key isEqual:@"footprint"]) cell.stringValue = process.usageAvailable ? husk_performance_bytes(process.footprint) : @"—";
+    else if ([key isEqual:@"resident"]) cell.stringValue = process.usageAvailable ? husk_performance_bytes(process.resident) : @"—";
+    else if ([key isEqual:@"threads"]) cell.stringValue = process.threadsAvailable ? [NSString stringWithFormat:@"%d", process.threads] : @"—";
+    cell.toolTip = [NSString stringWithFormat:@"%@ · PID %d · 父进程 %d · 负责进程 %d", process.name, process.pid, process.parent, process.responsible];
+    return cell;
 }
 - (void)windowWillClose:(NSNotification *)notification
 {

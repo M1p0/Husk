@@ -29,9 +29,13 @@ macOS 外壳包含独立 Dock/窗口身份、真实 CAMetalLayer 呈现、原生
 
 独立应用窗口支持拖动边框调整大小。窗口点尺寸乘以原有 Android density 得到新的渲染像素尺寸，Metal drawable、原生窗口尺寸、Android DisplayMetrics/Configuration 和 ViewRoot 随之更新；SurfaceView/TextureView 通过现有的尺寸变化回调通知 Flutter 等渲染引擎。原生 WebView 跟随 Android 布局铺满其区域，不额外加入固定比例黑边。配置变化通过当前 Activity 的 `onConfigurationChanged` 和视图重排处理，不在每次拖动时重建 Activity。修改窗口宿主后，已安装应用和图形安装器内捆绑的 `HuskAppHost` 需要更新，并选择带 `resize` 接口的新版 Runtime；已打开的旧进程需完全退出后重新打开。
 
-标题栏右侧的“性能”按钮或 `⌘I` 打开独立性能窗口，显示 CPU 使用率、内存占用（physical footprint）、驻留内存、线程数、渲染 FPS、累计渲染帧和当前渲染像素尺寸。每秒采样一次，关闭指标窗口立即停止采样，重复打开复用同一窗口；关闭主窗口仍退出整个 App。很窄的窗口会隐藏标题文字，为按钮留出空间。
+标题栏右侧的“性能”按钮或 `⌘I` 打开独立性能窗口，显示此 App 的 CPU 总使用率、内存总占用（physical footprint）、驻留内存合计、总线程数和进程数；下方表格列出各进程名称、PID、CPU、内存和线程数。窗口可调整大小，进程较多时可滚动。渲染 FPS、累计渲染帧和当前渲染像素尺寸沿用 Runtime 的已有计数。每秒采样一次，关闭指标窗口立即停止采样，重复打开复用同一窗口；关闭主窗口仍退出整个 App。很窄的主窗口会隐藏标题文字，为按钮留出空间。
 
-CPU 100% 表示占满一个核心，可高于 100%。CPU/内存/线程数只统计当前 App 进程，不含 WebKit 子进程；FPS 来自 Runtime 已有的渲染提交计数，不含原生 WebView，静止页面可为 0。首次打开或重开时，CPU/FPS 先显示“—”，在下一次采样后显示速率；读取失败也显示“—”。这项功能只需更新窗口宿主和安装器内的预编译宿主，不需要重建 Runtime。
+CPU 100% 表示占满一个核心，可高于 100%。统计包括当前 App、其同用户子孙进程，以及系统明确归属于它的 WebKit 等辅助进程，不按名称匹配其他 App 的进程。各进程分别建立 CPU 基线，并用 PID 和启动时间防止进程退出、重启或 PID 复用污染速率。内存是各进程系统记账的相加，驻留内存中的共享页可能重复计入，不表示去重后的独占物理内存。FPS 不含原生 WebView，静止页面可为 0。
+
+首次打开、重开或进程新加入时，相应 CPU/FPS 先显示“—”，下一次采样后显示速率；读取失败也显示“—”。缺失读数或归属查询不可用时，受影响的合计以“≥”表示已确认的部分，并显示说明。普通 Finder/Dock 启动的 App 具有独立归属；从终端/IDE 直接执行宿主时，系统可能把辅助进程归属到共同祖先，这时不会把祖先下其他 App 的进程一并计入，而会标明统计不完整。
+
+进程归属通过父进程链和动态解析的 macOS `responsibility_get_pid_responsible_for_pid` SPI 确认；后者用于识别由 launchd 启动的 XPC 辅助进程。SPI 不可用时保留父进程统计并显示不完整状态。[Chromium 的 macOS 实现](https://github.com/chromium/chromium/blob/main/base/process/process_info_mac.mm)也使用此系统归属接口。资源读数使用 `proc_pid_rusage` 和 `proc_pidinfo`，不申请其他进程的 Mach task port。这项功能只需更新窗口宿主和安装器内的预编译宿主，不需要重建 Runtime。
 
 ## 本地构建与安装
 
