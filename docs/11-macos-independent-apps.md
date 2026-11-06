@@ -29,6 +29,10 @@ macOS 外壳包含独立 Dock/窗口身份、真实 CAMetalLayer 呈现、原生
 
 独立应用窗口支持拖动边框调整大小。窗口点尺寸乘以原有 Android density 得到新的渲染像素尺寸，Metal drawable、原生窗口尺寸、Android DisplayMetrics/Configuration 和 ViewRoot 随之更新；SurfaceView/TextureView 通过现有的尺寸变化回调通知 Flutter 等渲染引擎。原生 WebView 跟随 Android 布局铺满其区域，不额外加入固定比例黑边。配置变化通过当前 Activity 的 `onConfigurationChanged` 和视图重排处理，不在每次拖动时重建 Activity。修改窗口宿主后，已安装应用和图形安装器内捆绑的 `HuskAppHost` 需要更新，并选择带 `resize` 接口的新版 Runtime；已打开的旧进程需完全退出后重新打开。
 
+标题栏右侧的“性能”按钮或 `⌘I` 打开独立性能窗口，显示 CPU 使用率、内存占用（physical footprint）、驻留内存、线程数、渲染 FPS、累计渲染帧和当前渲染像素尺寸。每秒采样一次，关闭指标窗口立即停止采样，重复打开复用同一窗口；关闭主窗口仍退出整个 App。很窄的窗口会隐藏标题文字，为按钮留出空间。
+
+CPU 100% 表示占满一个核心，可高于 100%。CPU/内存/线程数只统计当前 App 进程，不含 WebKit 子进程；FPS 来自 Runtime 已有的渲染提交计数，不含原生 WebView，静止页面可为 0。首次打开或重开时，CPU/FPS 先显示“—”，在下一次采样后显示速率；读取失败也显示“—”。这项功能只需更新窗口宿主和安装器内的预编译宿主，不需要重建 Runtime。
+
 ## 本地构建与安装
 
 已提供图形安装器，支持双击 APK、查看全部已登记应用、搜索、启动和卸载。当前安装位置为 `~/Applications/Husk APK Installer.app`；图形安装默认生成 `~/Applications/Husk Apps/<应用名>.app`。使用、构建和实测见[APK 安装器与管理](14-macos-apk-installer.md)。以下保留命令行与 Runtime 构建方式。
@@ -113,6 +117,7 @@ sequenceDiagram
 | App ABI | `src/runtime-api/husk-runtime-app-v1.h`；独立 getter、start/stop/state、输入/文本/文件结果与 WebView attach |
 | Runtime bridge | `src/runtime/husk-runtime-app-v1.m`；内部 Java/JNI/ELF/图形初始化、显式资源定位与回调转换 |
 | Mac 窗口宿主 | `tools/macos/HuskAppHost.m`；只含公共头文件，用 dlopen/dlsym 取得两张 ABI 表，无静态 core 依赖 |
+| 性能窗口 | `tools/macos/HuskPerformance.h`；AppKit 独立窗口、进程计数采样和按实际间隔计算速率 |
 | 发布器 | `tools/runtime/package_macos.py`；完整内容摘要、只读目录、稳定租约与排他发布 |
 | 安装/选择器 | `tools/macos/install_apk.py`；APK 身份/图标、独立 `.app`、默认版本与手动 JIT 设置 |
 | 验收驱动 | `tools/macos/acceptance.py`；真实 AppKit 进程、各自控制/数据/日志、截图与 A 崩溃后 B 连续运行 |
@@ -146,11 +151,14 @@ APK 明确调用 `exit(status)` 时，独立应用 profile 直接按该状态结
 ```sh
 sh tests/runtime/run_macos.sh
 python3 -B tests/macos/test_window_resize.py
+python3 -B tests/macos/test_performance.py
 python3 tests/translation-layer/run_guest_tls.py
 python3 tests/translation-layer/run_native_window_lifetime.py
 python3 tests/java-framework/run.py
 ```
 
 上述窗口回归检查五种尺寸下的真实 AppKit 视图、drawable、输入和原生覆盖层。另可加 `--app /absolute/path/Husk\ Java\ Fixture.app --runtime /absolute/path/runtime --out /absolute/task/evidence`，启动源码 fixture，核对实际 EGL 帧像素尺寸、Android 配置、原生 WebView 宽度和按钮点击，并保留真实窗口截图。
+
+性能回归检查速率计算、计数归零与读取失败、单核实测 CPU、标题栏入口、定时刷新、缩放后的像素尺寸、关闭停止采样和重新打开。浅色/深色与最小窗口的 AppKit 视图渲染保存在本任务证据目录；它们与真实 APK 的 WindowServer 截图分别标记。
 
 托管 CI/CD 保持关闭；这些都是本地手动命令。

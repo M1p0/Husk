@@ -10,6 +10,7 @@
 #include <math.h>
 #include "../../src/runtime-api/husk-runtime-app-v1.h"
 #include "runtime-bundle.h"
+#include "HuskPerformance.h"
 
 static const husk_runtime_api_v1 *runtime_api;
 static const husk_runtime_app_api_v1 *app_api;
@@ -240,7 +241,10 @@ static int startup_error(NSString *message, int code)
 @property NSString *controlRemainder;
 @property id executionActivity;
 @property NSSize runtimeSize;
+@property HuskPerformance *performance;
 - (void)resizeSurface;
+- (void)updatePerformanceTitlebar;
+- (void)showPerformance:(id)sender;
 - (void)back:(id)sender;
 - (void)capture:(NSString *)path;
 - (void)control:(NSDictionary *)command;
@@ -330,6 +334,7 @@ static void *start_app(void *unused)
             running = YES;
             [host resizeSurface];
             host.window.title = app_config[@"display_name"];
+            [host updatePerformanceTitlebar];
             status(nil);
         });
     }
@@ -337,8 +342,31 @@ static void *start_app(void *unused)
 }
 
 @implementation HuskApp
+- (void)updatePerformanceTitlebar
+{
+    if (!self.window.titlebarAccessoryViewControllers.count) return;
+    CGFloat titleWidth = [self.window.title sizeWithAttributes:@{NSFontAttributeName:[NSFont titleBarFontOfSize:0]}].width;
+    /* AppKit can draw its title underneath a right accessory in narrow windows. */
+    self.window.titleVisibility = self.window.frame.size.width < titleWidth + 170 ? NSWindowTitleHidden : NSWindowTitleVisible;
+}
+- (void)showPerformance:(id)sender
+{
+    (void)sender;
+    if (stopping) return;
+    if (!self.performance) {
+        self.performance = [[HuskPerformance alloc] initWithName:app_config[@"display_name"]];
+        __weak HuskApp *weakSelf = self;
+        self.performance.readRendering = ^{
+            BOOL active = running && !stopping;
+            NSSize pixels = ((CAMetalLayer *)weakSelf.screen.layer).drawableSize;
+            return (HuskRenderMetrics){active ? app_api->frames() : 0, pixels, active};
+        };
+    }
+    [self.performance showForWindow:self.window];
+}
 - (void)resizeSurface
 {
+    [self updatePerformanceTitlebar];
     NSSize points = self.screen.bounds.size;
     NSSize pixels = NSMakeSize(round(points.width * surface_scale), round(points.height * surface_scale));
     if (pixels.width <= 0 || pixels.height <= 0) return;
@@ -379,6 +407,22 @@ static void *start_app(void *unused)
     __weak HuskApp *weakSelf = self;
     root.onResize = ^{ [weakSelf resizeSurface]; };
     self.window.contentView = root;
+    NSButton *performance = [NSButton buttonWithTitle:@"性能" target:self action:@selector(showPerformance:)];
+    performance.bezelStyle = NSBezelStyleTexturedRounded;
+    performance.controlSize = NSControlSizeSmall;
+    performance.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
+    performance.image = [NSImage imageWithSystemSymbolName:@"waveform.path.ecg" accessibilityDescription:nil];
+    performance.imagePosition = NSImageLeft;
+    performance.toolTip = @"查看此 App 的实时性能指标";
+    [performance setAccessibilityLabel:@"显示性能指标"];
+    performance.frame = NSMakeRect(0, 0, 64, 22);
+    performance.autoresizingMask = NSViewMinYMargin | NSViewMaxYMargin;
+    NSTitlebarAccessoryViewController *accessory = [NSTitlebarAccessoryViewController new];
+    accessory.layoutAttribute = NSLayoutAttributeRight;
+    accessory.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 72, 22)];
+    [accessory.view addSubview:performance];
+    [self.window addTitlebarAccessoryViewController:accessory];
+    [self updatePerformanceTitlebar];
     char error[512] = {0};
     if (app_api->attach_web((__bridge void *)self.screen, (__bridge void *)self.web, surface_scale, 1, error, sizeof(error))) { fail(str(error)); return; }
     [self.window center]; [self.window makeKeyAndOrderFront:nil];
@@ -431,6 +475,11 @@ static void *start_app(void *unused)
     NSString *kind = command[@"action"];
     if ([kind isEqual:@"quit"]) { [NSApp terminate:nil]; return; }
     if ([kind isEqual:@"shot"]) { [self capture:command[@"path"]]; return; }
+    if ([kind isEqual:@"performance"]) {
+        if (command[@"visible"] && ![command[@"visible"] boolValue]) [self.performance close];
+        else [self showPerformance:nil];
+        return;
+    }
     if ([kind isEqual:@"resize"]) {
         double width = [command[@"width"] doubleValue], height = [command[@"height"] doubleValue];
         NSSize minimum = self.window.contentMinSize, maximum = self.window.contentMaxSize;
@@ -495,13 +544,15 @@ static void *start_app(void *unused)
     [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
 }
 - (void)back:(id)sender { (void)sender; if (running) app_api->back(); }
-- (void)windowWillClose:(NSNotification *)notification { (void)notification; [NSApp terminate:nil]; }
+- (void)windowWillClose:(NSNotification *)notification
+{ if (notification.object == self.window) [NSApp terminate:nil]; }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { (void)sender; return YES; }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender
 {
     (void)sender;
     if (stopping) return NSTerminateCancel;
     stopping = YES; [self.timer invalidate];
+    [self.performance close];
     [self.window orderOut:nil];
     if (self.executionActivity) { [NSProcessInfo.processInfo endActivity:self.executionActivity]; self.executionActivity = nil; }
     background_activity = NO;
@@ -609,6 +660,7 @@ int main(int argc, char **argv)
         NSMenuItem *app_item = [NSMenuItem new]; [menu addItem:app_item];
         NSMenu *app_menu = [NSMenu new];
         [app_menu addItemWithTitle:@"返回" action:@selector(back:) keyEquivalent:@"["];
+        [app_menu addItemWithTitle:@"显示性能指标" action:@selector(showPerformance:) keyEquivalent:@"i"];
         [app_menu addItem:NSMenuItem.separatorItem];
         [app_menu addItemWithTitle:@"退出" action:@selector(terminate:) keyEquivalent:@"q"];
         app_item.submenu = app_menu; NSApp.mainMenu = menu;

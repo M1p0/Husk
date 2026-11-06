@@ -14,6 +14,10 @@
 
 窗口修复新增验收：五种 AppKit 尺寸下的 drawable/Runtime 通知/输入与覆盖层；真实 Java fixture 的 EGL 帧尺寸、DisplayMetrics/Configuration、全宽原生 WebView 与点击；Jasmine 和 Pikapika 的 `720×1280 → 1520×1280 → 1000×1560 → 720×1280` 实际帧及布局变化。最终从正式安装位置启动、使用默认 Runtime 再次通过宽窗口验证，Pikapika 点击重排后的“7”按钮正确显示 7。Java 框架回归、app ABI 前缀兼容和 ASan NativeWindow/EGL 引用回归通过。证据在 `/Users/m1p0/Developer/temp/codex/Husk/window-resize-b7330d2e/evidence/`，包含截图、日志、结果与更新前宿主备份。鸣潮只验证宿主更新和签名，未进行游戏界面验收；下文的完整版本切换、后台与业务路径验收仍对应此前的 closefix 版本。
 
+性能窗口追加验收：标题栏按钮、单窗口/单定时器、CPU 单核实测（约 100%）、速率与计数重置、缩放尺寸、关闭停止采样和重开通过；浅色/深色和最小窗口的 AppKit 视图渲染已复核。Jasmine/Pikapika 的独立测试副本使用默认 Runtime 实际渲染后，打开、重复打开、关闭和重开指标窗口通过，退出码均 0；真实窗口截图已复核。大型 APK 退出时原生线程保留到进程结束的行为仍在，旧 Jasmine 宿主对照复现同样的状态记录，没有把它列为内部线程收拢成功。
+
+已将性能宿主更新到正式 Jasmine、Pikapika、鸣潮及图形安装器；采用完整签名包原子交换，已运行的进程继续持有原有映像。严格签名、宿主代码一致性、安装配置和原 APK 摘要核对通过，无需更换 Runtime。鸣潮未进行性能窗口的游戏内验收。证据与回退备份保存在 `/Users/m1p0/Developer/temp/codex/Husk/performance-window-fd0ed40e/evidence/`，其中 `real-apps-final/results.json` 为双 APK 验收，`old-host-baseline/results.json` 为退出行为对照，`release-inventory.json` 记录正式安装位置与备份。
+
 设计、运行方法与升级流程见[实现文档](11-macos-independent-apps.md)，整体架构与后续执行顺序见[设计](07-independent-app-runtime-design.md)和[执行方案](08-independent-app-runtime-execution-plan.md)。
 
 ## 已完成检查
