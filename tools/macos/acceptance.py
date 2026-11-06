@@ -59,7 +59,11 @@ class App:
     def status(self) -> dict:
         if self.process.poll() is not None:
             raise RuntimeError(f"{self.bundle.name} exited ({self.process.returncode}); see {self.output}")
-        return read_json(self.state / "status.json")
+        value = read_json(self.state / "status.json")
+        # Explicit guest exit can leave its last running status on disk. A
+        # reopened process must publish its own PID before old frames/status
+        # can be treated as readiness or errors for this generation.
+        return value if value.get("pid") == self.process.pid else {}
 
     def wait_ready(self, timeout: float = 90) -> dict:
         deadline = time.monotonic() + timeout

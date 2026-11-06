@@ -281,6 +281,12 @@ static int32_t app_stop(char *error, size_t capacity)
         return error_result(HUSK_RUNTIME_INVALID_STATE, error, capacity, @"start and stop must be serialized by the host");
     if (!atomic_compare_exchange_strong(&g_state, &state, HUSK_RUNTIME_APP_STOPPING))
         return error_result(HUSK_RUNTIME_INVALID_STATE, error, capacity, @"application state changed during stop");
+    /* This profile always ends its process after stop. Do not make later file
+     * operations fail with ECANCELED while native workers finish: Go/SQLite
+     * treats that synthetic I/O error as a panic and replaces a requested
+     * normal close with exit(2). The session still stops Java entry/loopers;
+     * uncooperative native workers are retained until the host exits. */
+    tl_session_set_cancellable(false);
     tl_session_request_stop();
     if (g_java_attempted && !tl_javaapp_stop())
         return failed(HUSK_RUNTIME_INVALID_STATE, error, capacity, @"APK workers did not drain; retain resources and terminate the application process");

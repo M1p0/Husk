@@ -302,12 +302,15 @@ def scenario(run: Run, pika_bundle: Path, jasmine_bundle: Path):
     check(not lease_available(run.v1) and not lease_available(run.v2), "both active versions must stay leased")
     survivor_before = jasmine.status()
     crash_before = pika.status()
-    os.kill(pika.process.pid, signal.SIGSEGV)
+    # A user-generated SIGSEGV can be consumed by the runtime's fault/JIT
+    # handlers without an actual memory fault. SIGKILL guarantees abrupt
+    # process death and exercises OS-owned cleanup without guest cooperation.
+    os.kill(pika.process.pid, signal.SIGKILL)
     pika.process.wait(timeout=run.remaining(15))
-    check(pika.process.returncode != 0, "injected Pikapika SIGSEGV did not crash")
+    check(pika.process.returncode == -signal.SIGKILL, "Pikapika did not end from the injected SIGKILL")
     check(lease_available(run.v1), "crashed v1 process did not release its lease")
     check(not lease_available(run.v2), "surviving Jasmine lost its v2 lease")
-    run.record("injected-crash-isolates-process-and-version-leases", injected_signal="SIGSEGV",
+    run.record("abrupt-process-death-isolates-process-and-version-leases", injected_signal="SIGKILL",
                pika_before=crash_before, pika_exit_code=pika.process.returncode,
                jasmine_before=survivor_before, jasmine_after=jasmine.status(),
                v1_exclusive_available=True, v2_exclusive_available=False)
