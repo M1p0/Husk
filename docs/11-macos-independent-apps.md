@@ -131,7 +131,7 @@ APK 明确调用 `exit(status)` 时，独立应用 profile 直接按该状态结
 
 **长期内存验收尚未通过。** 现有 DVM 的 GC 和 Java 终结调度没有实现。新桥接已对原始帧队列、SurfaceTexture producer、NativeWindow/EGL 引用进行显式回收，但应用从 `Bitmap.wrapHardwareBuffer` 取得的独立 Bitmap 会依赖尚缺失的可达性回收。不能提前回收仍可能被应用持有的 Bitmap；也不能因为 ImageReader 队列有限就宣称全部像素内存有界。具体根集合、并发与终结依赖、分阶段实施见[DVM 内存回收方案](12-dvm-memory-reclamation-plan.md)。
 
-真实 APK、交互、退出/重开、双进程故障及版本切换的记录见后续本节更新。已知需要账户或第三方服务的路径，必须分别记录实际成功、外部错误与未测，不用首帧代替业务验收。
+当前发布、回归结果和真实窗口验收进度见[发布与验收记录](13-macos-release-validation.md)。已知需要账户或第三方服务的路径，必须分别记录实际成功、外部错误与未测，不用首帧代替业务验收。
 
 公共接口与版本持有回归：
 
