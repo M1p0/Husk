@@ -29,6 +29,8 @@ macOS 外壳包含独立 Dock/窗口身份、真实 CAMetalLayer 呈现、原生
 
 ## 本地构建与安装
 
+已提供图形安装器，支持双击 APK、查看全部已登记应用、搜索、启动和卸载。当前安装位置为 `~/Applications/Husk APK Installer.app`；图形安装默认生成 `~/Applications/Husk Apps/<应用名>.app`。使用、构建和实测见[APK 安装器与管理](14-macos-apk-installer.md)。以下保留命令行与 Runtime 构建方式。
+
 先准备仓库已有的 `build/java-runtime`、`build/android-system` 与 Java 构建所需 JDK/R8。只重建 Java 框架可用：
 
 ```sh
@@ -48,7 +50,7 @@ python3 tools/macos/install_apk.py install /absolute/path/application.apk
 python3 tools/macos/install_apk.py list
 ```
 
-默认输出 `build/macos-apps/<应用名>.app`，可在 Finder 双击或用 `open` 启动。`--applications` 可以指定其他应用目录；不是必须放在系统 `/Applications`。运行库目录必须保持原路径可访问。
+命令行安装器默认输出 `build/macos-apps/<应用名>.app`，可在 Finder 双击或用 `open` 启动。`--applications` 可以指定其他应用目录；不是必须放在系统 `/Applications`。运行库目录必须保持原路径可访问。
 
 app profile 会复制匹配的 macOS arm64 ANGLE 库及其许可证，运行时不依赖 VS Code 安装。开发构建默认从本机 VS Code 的 Electron 提取；其他来源必须同时显式提供 `--angle-dir` 和与该构建匹配的 `--angle-license`。不修改源应用。manifest 记录来源摘要，并逐文件校验发布包；不接受 iOS/Simulator 的图形库。
 

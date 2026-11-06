@@ -108,6 +108,7 @@ require separate target-device validation.
 - [执行方案：能力探针、分阶段实现与验收](docs/08-independent-app-runtime-execution-plan.md)
 - [macOS M1：本地构建、动态加载验证与当前限制](docs/09-macos-runtime-m1.md)
 - [macOS 独立 App：构建、安装、升级、接口与实际验收](docs/11-macos-independent-apps.md)
+- [macOS APK 安装器：双击安装、应用列表、启动与卸载](docs/14-macos-apk-installer.md)
 - [DVM 内存回收：已确认缺口与正确实施步骤](docs/12-dvm-memory-reclamation-plan.md)
 - [macOS 发布与验收：实际检查、证据和待完成项](docs/13-macos-release-validation.md)
 

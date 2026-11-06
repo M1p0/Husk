@@ -36,6 +36,122 @@ DEFAULT_STORE = ROOT / "build/macos-runtime"
 DEFAULT_APPLICATIONS = ROOT / "build/macos-apps"
 
 
+def registry_path() -> Path:
+    return Path(os.environ.get("HUSK_APPS_REGISTRY", str(Path.home() / "Library/Application Support/Husk/Installer/registry.json"))).expanduser()
+
+
+@contextmanager
+def directory_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("unsafe management lock")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("应用正在运行或安装目录正在忙，请先退出应用后重试") from None
+        yield
+    finally:
+        os.close(fd)
+
+
+def tracked_directories() -> list[Path]:
+    path = registry_path()
+    stored = json.loads(path.read_text()) if path.exists() else {"schema": 1, "directories": []}
+    if stored.get("schema") != 1 or not isinstance(stored.get("directories"), list):
+        raise ValueError("invalid application registry")
+    extra = json.loads(os.environ.get("HUSK_APPS_ROOTS", "[]"))
+    roots = [DEFAULT_APPLICATIONS, Path.home() / "Applications", Path.home() / "Applications/Husk Apps", Path("/Applications")]
+    roots += [Path(p) for p in [*stored["directories"], *extra] if isinstance(p, str) and Path(p).is_absolute()]
+    return list(dict.fromkeys(p.expanduser().resolve() for p in roots))
+
+
+def track_directory(path: Path):
+    path = path.expanduser().resolve(strict=True)
+    if not path.is_dir(): raise ValueError("application directory does not exist")
+    registry = registry_path()
+    with directory_lock(registry.with_suffix(".lock")):
+        value = json.loads(registry.read_text()) if registry.exists() else {"schema": 1, "directories": []}
+        if value.get("schema") != 1 or not isinstance(value.get("directories"), list):
+            raise ValueError("invalid application registry")
+        value["directories"] = sorted(set([*value["directories"], str(path)]))
+        atomic_json(registry, value)
+
+
+def managed_application(path: Path) -> dict:
+    if path.is_symlink() or path.suffix != ".app" or not path.is_dir():
+        raise ValueError("not an installed Husk application")
+    path = path.resolve(strict=True)
+    config = json.loads(safe_file(path, "Contents/Resources/husk-app.json").read_text())
+    info = plistlib.loads(safe_file(path, "Contents/Info.plist").read_bytes())
+    if not isinstance(config, dict) or not isinstance(info, dict):
+        raise ValueError("invalid application installation metadata")
+    identity = config.get("bundle_id")
+    if (config.get("schema") != 1 or not isinstance(identity, str) or not identity.startswith("org.husk.apk.")
+            or not re.fullmatch(r"[A-Za-z0-9.-]+", identity)
+            or info.get("CFBundleIdentifier") != identity or info.get("CFBundleExecutable") != "HuskAppHost"):
+        raise ValueError("application identity does not match its installation")
+    if (not all(isinstance(config.get(key), str) for key in ["display_name", "android_package", "android_version_name", "apk_file", "apk_sha256", "runtime_store"])
+            or not re.fullmatch(r"[0-9a-f]{64}", config["apk_sha256"])):
+        raise ValueError("invalid application metadata")
+    safe_file(path, "Contents/MacOS/HuskAppHost")
+    safe_file(path, "Contents/Resources/package/" + config["apk_file"])
+    row = {key: config.get(key, "") for key in ["bundle_id", "display_name", "android_package", "android_version_name", "android_version_code", "apk_sha256", "apk_file", "runtime_store"]}
+    row["application"] = str(path)
+    row["icon"] = str(path / "Contents/Resources/AppIcon.icns")
+    row["data_directory"] = str(app_data_base() / identity)
+    return row
+
+
+def app_data_base() -> Path:
+    return Path(os.environ.get("HUSK_APPS_DATA_BASE", str(Path.home() / "Library/Application Support/Husk/Apps"))).expanduser()
+
+
+def list_applications(roots: list[Path]) -> list[dict]:
+    rows, seen = [], set()
+    for root in roots:
+        for app in sorted(root.glob("*.app")):
+            try:
+                row = managed_application(app)
+            except (OSError, ValueError, KeyError, TypeError, plistlib.InvalidFileException):
+                continue
+            if row["application"] not in seen:
+                rows.append(row); seen.add(row["application"])
+    return sorted(rows, key=lambda row: (row["display_name"].casefold(), row["application"]))
+
+
+def uninstall_application(path: Path, remove_data: bool):
+    row = managed_application(path)
+    app = Path(row["application"])
+    data = app_data_base().resolve() / row["bundle_id"]
+    # The same lock used by the host prevents uninstalling a running normal
+    # application. Never signal a PID from an old status.json.
+    if data.is_symlink(): raise ValueError("application data must not be a symlink")
+    data.mkdir(parents=True, exist_ok=True)
+    with directory_lock(app.parent / ".husk-install.lock"), directory_lock(data / "instance.lock"):
+        current = managed_application(app)
+        if current != row: raise ValueError("application changed; refresh before uninstalling")
+        staging = Path(tempfile.mkdtemp(prefix="husk-uninstall-", dir=staging_directory(app.parent)))
+        try:
+            if remove_data:
+                staging_directory(data.parent)
+            publish_exclusive(app, staging / app.name)
+            sync_directory(app.parent)
+            if remove_data:
+                try:
+                    publish_exclusive(data, staging / "application-data")
+                except BaseException:
+                    publish_exclusive(staging / app.name, app)
+                    sync_directory(app.parent)
+                    raise
+                sync_directory(data.parent)
+        finally:
+            shutil.rmtree(temporary_path(staging))
+    print(json.dumps({"ok": True, "application": str(app), "data_kept": not remove_data, "data_directory": str(data)}))
+
+
 def run(arguments: list[str]) -> str:
     return subprocess.check_output(arguments, text=True, stderr=subprocess.STDOUT).strip()
 
@@ -427,7 +543,12 @@ def install_snapshot(options, apk: Path):
         staging = staging_parent / destination.name
         try:
             host = staging_parent / "HuskAppHost"
-            run(["bash", str(ROOT / "scripts/build_macos_app_host.sh"), str(host)])
+            if getattr(options, "host", None):
+                source_host = options.host.resolve(strict=True)
+                run(["codesign", "--verify", "--strict", str(source_host)])
+                shutil.copy2(source_host, host)
+            else:
+                run(["bash", str(ROOT / "scripts/build_macos_app_host.sh"), str(host)])
             resources = staging / "Contents/Resources"
             package_root = resources / "package"
             package_root.mkdir(parents=True)
@@ -475,6 +596,7 @@ def install(options):
     if not source.is_file(): raise ValueError("APK must be a regular file")
     applications = options.applications.expanduser().resolve()
     applications.mkdir(parents=True, exist_ok=True)
+    track_directory(applications)
     descriptor = os.open(applications / ".husk-install.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, 0o600)
     try:
         info = os.fstat(descriptor)
@@ -505,6 +627,14 @@ def arguments():
     command.add_argument("--width", type=int, default=720)
     command.add_argument("--height", type=int, default=1280)
     command.add_argument("--density", type=float, default=2)
+    command.add_argument("--host", type=Path, help="use a prebuilt signed launcher (GUI installer bundle)")
+    command = commands.add_parser("inspect", help="read an APK without installing or executing it")
+    command.add_argument("apk", type=Path)
+    command = commands.add_parser("uninstall", help="remove one managed app; retain its data unless requested")
+    command.add_argument("application", type=Path)
+    command.add_argument("--remove-data", action="store_true")
+    command = commands.add_parser("track", help="include an application directory in the manager")
+    command.add_argument("applications", type=Path)
     command = commands.add_parser("select", help="verify and atomically select a complete macos-app Runtime")
     command.add_argument("runtime", type=Path)
     command.add_argument("--store", type=Path)
@@ -513,6 +643,7 @@ def arguments():
     command.add_argument("--jit-mib", type=int, required=True)
     command = commands.add_parser("list", help="list the generated applications")
     command.add_argument("--applications", type=Path, default=DEFAULT_APPLICATIONS)
+    command.add_argument("--all", action="store_true", help="include all known installation directories")
     return parser.parse_args()
 
 
@@ -521,6 +652,13 @@ def main():
     options = arguments()
     if sys.platform != "darwin" or platform.machine() != "arm64": raise ValueError("requires native Apple Silicon macOS")
     if options.command == "install": install(options)
+    elif options.command == "inspect":
+        metadata, icon = apk_metadata(options.apk.resolve(strict=True))
+        print(json.dumps({**metadata, "has_raster_icon": bool(icon), "file": str(options.apk.resolve()), "size_bytes": options.apk.stat().st_size}, ensure_ascii=False))
+    elif options.command == "uninstall": uninstall_application(options.application, options.remove_data)
+    elif options.command == "track":
+        track_directory(options.applications)
+        print(json.dumps({"ok": True}))
     elif options.command == "select":
         runtime = options.runtime.resolve(strict=True)
         store = options.store.resolve(strict=True) if options.store else runtime.parent
@@ -536,10 +674,7 @@ def main():
         atomic_json(store / "settings.json", {"schema": 1, "jit_megabytes": options.jit_mib})
         print(json.dumps({"ok": True, "store": str(store), "jit_megabytes": options.jit_mib}))
     else:
-        rows = []
-        for app in sorted(options.applications.expanduser().glob("*.app")):
-            config = app / "Contents/Resources/husk-app.json"
-            if config.is_file(): rows.append({"application": str(app.resolve()), **json.loads(config.read_text())})
+        rows = list_applications(tracked_directories() if options.all else [options.applications.expanduser()])
         print(json.dumps(rows, ensure_ascii=False, indent=2))
 
 
