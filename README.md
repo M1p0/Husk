@@ -94,14 +94,16 @@ String allocation fault injection: `sh tests/translation-layer/run_string_oom.sh
 
 The proposed jailbreak architecture gives each APK its own iOS app identity and
 process, with a versioned Husk runtime loaded at process startup. This is a
-design and execution plan; the independent-app runtime, resource controls and
-target-device validation are not implemented by these documents.
+design and execution plan. An initial macOS headless-bootstrap runtime package
+and dynamic-loading probe are implemented; independent app shells, the stable
+APK launch interface, resource enforcement and iOS validation remain future work.
 Development starts with a macOS prototype of the shared core and protocols;
 iOS-specific registration, sandboxing, JIT, memory and background behavior still
 require separate target-device validation.
 
 - [架构与设计：独立应用、资源隔离及运行库升级](docs/07-independent-app-runtime-design.md)
 - [执行方案：能力探针、分阶段实现与验收](docs/08-independent-app-runtime-execution-plan.md)
+- [macOS M1：本地构建、动态加载验证与当前限制](docs/09-macos-runtime-m1.md)
 
 ## Install
 
