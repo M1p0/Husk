@@ -56,6 +56,8 @@ void tl_javaapp_keyboard_closed(void);
 void tl_javaapp_documents_picked(const char *const *paths, int n);
 /* The screen's insets changed (rotation), or the keyboard now covers ime_bottom pixels of it. */
 void tl_javaapp_set_insets(int left, int top, int right, int bottom, int ime_bottom);
+/* Host surface pixels changed; configuration and view layout run on Java's main thread. */
+void tl_javaapp_resize(int width, int height);
 unsigned long tl_javaapp_frames(void);
 bool tl_javaapp_ended(void);
 /* End the current Java app: the looper returns, the GL thread joins. Call before loading another. */

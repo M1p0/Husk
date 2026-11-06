@@ -137,6 +137,13 @@ public final class MainActivity extends Activity {
         super.onPause();
     }
 
+    @Override public void onConfigurationChanged(android.content.res.Configuration config) {
+        super.onConfigurationChanged(config);
+        android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
+        Log.i(TAG, "HUSK_FIXTURE resized=" + metrics.widthPixels + "x" + metrics.heightPixels
+                + " dp=" + config.screenWidthDp + "x" + config.screenHeightDp);
+    }
+
     @Override protected void onDestroy() {
         destroyed = true;
         handler.removeCallbacks(ticker);

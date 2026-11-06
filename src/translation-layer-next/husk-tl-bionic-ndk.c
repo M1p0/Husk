@@ -791,7 +791,7 @@ static void b_ANativeActivity_flags(void *a, uint32_t add, uint32_t remove) { (v
 static void b_ANativeActivity_input(void *a, uint32_t flags) { (void)a; (void)flags; }
 
 
-typedef struct tl_nwindow { atomic_int refs; int width, height, format; void *layer; jobj *texture; void *bits; } tl_nwindow;
+typedef struct tl_nwindow { atomic_int refs; atomic_int width, height; int format; void *layer; jobj *texture; void *bits; } tl_nwindow;
 static tl_nwindow g_window = { 1, 1080, 2400, 1, NULL, NULL, NULL };
 
 void tl_nwindow_configure(int w, int h, void *layer) { g_window.width = w; g_window.height = h; g_window.layer = layer; }

@@ -52,7 +52,8 @@ int main(int argc, char **argv)
         REQUIRE(getter && base_getter);
         REQUIRE(getter(0, sizeof(*api)) == NULL);
         REQUIRE(getter(2, sizeof(*api)) == NULL);
-        REQUIRE(getter(1, sizeof(*api) - 1) == NULL);
+        REQUIRE(getter(1, HUSK_RUNTIME_APP_V1_REQUIRED_SIZE - 1) == NULL);
+        REQUIRE(getter(1, HUSK_RUNTIME_APP_V1_REQUIRED_SIZE) != NULL);
         api = getter(1, sizeof(*api));
         REQUIRE(api && api->abi_version == 1 && api->struct_size >= sizeof(*api));
         const husk_runtime_api_v1 *base = base_getter(1, sizeof(husk_runtime_api_v1));
@@ -84,6 +85,9 @@ int main(int argc, char **argv)
             .apk_path=outside.fileSystemRepresentation, .angle_egl=outside.fileSystemRepresentation,
             .angle_gles=outside.fileSystemRepresentation, .width=720, .height=1280, .density=2};
         REQUIRE(api->state() == HUSK_RUNTIME_APP_IDLE);
+        REQUIRE(api->resize(0, 1280, error, sizeof(error)) == HUSK_RUNTIME_INVALID_ARGUMENT);
+        REQUIRE(api->resize(720, 16385, error, sizeof(error)) == HUSK_RUNTIME_INVALID_ARGUMENT);
+        REQUIRE(api->resize(720, 1280, error, sizeof(error)) == HUSK_RUNTIME_INVALID_STATE);
         REQUIRE(api->start(handle, &config, error, sizeof(error)) == HUSK_RUNTIME_INVALID_STATE);
         REQUIRE(api->stop(error, sizeof(error)) == HUSK_RUNTIME_INVALID_STATE);
         REQUIRE(api->state() == HUSK_RUNTIME_APP_IDLE);

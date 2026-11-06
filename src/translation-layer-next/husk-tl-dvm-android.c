@@ -31,6 +31,7 @@
 #include "husk-tl-ld.h"
 
 void tl_nwindow_configure(int w, int h, void *layer);
+void tl_nwindow_resize(int w, int h);
 void *tl_nwindow_get(void);
 
 static struct {
@@ -39,6 +40,7 @@ static struct {
     pthread_mutex_t q_lock;
     int32_t q[4096]; int qn;                    /* packed input events: phase, id, x bits, y bits */
     atomic_ulong frames;
+    atomic_uint_fast64_t surface_size;
     atomic_bool ended, paused, render_requested, app_done, gl_done;
     jobj *gl_view, *gl_renderer;
     int gl_version;
@@ -51,6 +53,9 @@ static struct {
     char **text; int ntext, ctext;              /* typed text waiting for Native.pollText: "t<text>", "d", "e", "h" */
     int insets[5];                              /* left, top, right, bottom, keyboard */
 } A = { .q_lock = PTHREAD_MUTEX_INITIALIZER, .t_lock = PTHREAD_MUTEX_INITIALIZER };
+
+static int screen_width(void) { return (int)(atomic_load(&A.surface_size) >> 32); }
+static int screen_height(void) { return (int)(atomic_load(&A.surface_size) & UINT32_MAX); }
 
 static jvalue L(void *p) { jvalue v; v.j = 0; v.l = p; return v; }
 static jvalue I(int32_t i) { jvalue v; v.j = (uint32_t)i; return v; }
@@ -270,8 +275,8 @@ NAT(N_assetLength) { (void)self; const tl_zip_entry *e = asset_find(tl_jni_strin
 NAT(N_dataDir) { (void)self; (void)a; *ret = L(jstr(A.data)); return true; }
 NAT(N_externalDir) { (void)self; (void)a; *ret = L(jstr(A.ext)); return true; }
 NAT(N_packageName) { (void)self; (void)a; *ret = L(jstr(A.pkg)); return true; }
-NAT(N_screenWidth) { (void)self; (void)a; *ret = I(A.cfg.width); return true; }
-NAT(N_screenHeight) { (void)self; (void)a; *ret = I(A.cfg.height); return true; }
+NAT(N_screenWidth) { (void)self; (void)a; *ret = I(screen_width()); return true; }
+NAT(N_screenHeight) { (void)self; (void)a; *ret = I(screen_height()); return true; }
 NAT(N_density) { (void)self; (void)a; *ret = F(A.cfg.density > 0 ? A.cfg.density : 3.0f); return true; }
 NAT(N_requestRender) { (void)self; (void)a; (void)ret; atomic_store(&A.render_requested, true); return true; }
 NAT(N_setContentView) { (void)self; (void)ret; A.content = a[0].l; return true; }
@@ -413,6 +418,17 @@ void tl_javaapp_set_insets(int l, int t, int r, int b, int ime)
 {
     A.insets[0] = l; A.insets[1] = t; A.insets[2] = r; A.insets[3] = b; A.insets[4] = ime;
     tl_javaapp_touch(8, 0, 0, 0);
+}
+void tl_javaapp_resize(int width, int height)
+{
+    if (width <= 0 || height <= 0 || width > 16384 || height > 16384) return;
+    uint64_t size = (uint64_t)(uint32_t)width << 32 | (uint32_t)height;
+    if (atomic_exchange(&A.surface_size, size) == size) return;
+    tl_nwindow_resize(width, height);
+    husk_aosp_set_session(NULL, width, height);
+    tl_javaapp_touch(10, 0, 0, 0);
+    atomic_store(&A.render_requested, true);
+    tl_log_line("javaapp: host surface resized to %dx%d", width, height);
 }
 NAT(N_pollText)
 {
@@ -895,7 +911,7 @@ void tl_javaapp_app_pixels(const void *px, int w, int h)
     if (E2.pw != w || E2.ph != h || !E2.px) E2.px = realloc(E2.px, n);
     if (E2.px) memcpy(E2.px, px, n);
     E2.pw = w; E2.ph = h; E2.tex = 0;
-    E2.x = 0; E2.y = 0; E2.w = A.cfg.width; E2.h = A.cfg.height;
+    E2.x = 0; E2.y = 0; E2.w = screen_width(); E2.h = screen_height();
     E2.on = true; E2.seq++;
     pthread_mutex_unlock(&E2.lk);
 }
@@ -973,13 +989,18 @@ static void *gl_main_body(void *arg)
     uint64_t app_seq = 0;
     void (*clearColor)(float, float, float, float) = gl_fn("glClearColor");
     void (*clear)(uint32_t) = gl_fn("glClear");
-    tl_log_line("javaapp: render thread ready (ES %d available), %dx%d", es3 ? 3 : 2, A.cfg.width, A.cfg.height);
+    tl_log_line("javaapp: render thread ready (ES %d available), %dx%d", es3 ? 3 : 2, screen_width(), screen_height());
 
     jobj *gl10 = NULL;
     jvalue p1[1];
     int64_t next = now_ns();
+    uint64_t previous_size = atomic_load(&A.surface_size);
     while (!atomic_load(&A.ended)) {
         if (atomic_load(&A.paused)) { usleep(20000); next = now_ns(); continue; }
+        uint64_t size = atomic_load(&A.surface_size);
+        int width = (int)(size >> 32), height = (int)(size & UINT32_MAX);
+        bool resized = size != previous_size;
+        previous_size = size;
         bool drew = false;
         /* the app's renderer, once its GLSurfaceView is on screen */
         if (__atomic_load_n(&A.gl_renderer, __ATOMIC_ACQUIRE) && !app) {
@@ -1004,7 +1025,7 @@ static void *gl_main_body(void *arg)
                 jvalue p2[2] = { L(gl10), L(eglcfg) };
                 tl_jni_call(A.gl_renderer, "onSurfaceCreated", "(Ljavax/microedition/khronos/opengles/GL10;Ljavax/microedition/khronos/egl/EGLConfig;)V", p2);
                 if (tl_jni_pending()) log_pending("onSurfaceCreated");
-                jvalue p3[3] = { L(gl10), I(A.cfg.width), I(A.cfg.height) };
+                jvalue p3[3] = { L(gl10), I(width), I(height) };
                 tl_jni_call(A.gl_renderer, "onSurfaceChanged", "(Ljavax/microedition/khronos/opengles/GL10;II)V", p3);
                 if (tl_jni_pending()) log_pending("onSurfaceChanged");
                 p1[0] = L(gl10);
@@ -1042,12 +1063,12 @@ static void *gl_main_body(void *arg)
         uint64_t q = app_frame_seq();
         bool app_fresh = q != app_seq;
         app_seq = q;
-        if (drew || fresh || app_fresh) {
+        if (drew || fresh || app_fresh || resized) {
             makeCurrent(dpy, surf, surf, ui);
             if (!app) { clearColor(0, 0, 0, tl_web_any_visible() && !app_frame_on() ? 0 : 1); clear(0x4000); }     /* web views show through from under the screen */
-            if (!app) app_frame_draw(&appov, &appup, A.cfg.width, A.cfg.height);
-            clear_native_web_regions(A.cfg.width, A.cfg.height);
-            if (tl_ui_has_frame()) ov_draw(&ov, A.cfg.width, A.cfg.height);
+            if (!app) app_frame_draw(&appov, &appup, width, height);
+            clear_native_web_regions(width, height);
+            if (tl_ui_has_frame()) ov_draw(&ov, width, height);
             /* ANGLE/Metal needs a completion boundary on both sides of the
              * offscreen-to-window handoff. Keep this on actual new frames;
              * it must also run when diagnostic frame capture is disabled. */
@@ -1240,6 +1261,7 @@ bool tl_javaapp_start(const tl_javaapp_config *cfg)
     /* stores into a library's executable view (data sharing a page with its code, as Unity's does) go through the writable one */
     { void tl_codewrite_enable(void); tl_codewrite_enable(); }
     A.cfg = *cfg;
+    atomic_store(&A.surface_size, (uint64_t)(uint32_t)cfg->width << 32 | (uint32_t)cfg->height);
     snprintf(A.apk, sizeof(A.apk), "%s", cfg->apk_path);
     /* JIT-less mode: LuaJIT (LÖVE games) runs its interpreter, as the SDL driver already has it do */
     if (getenv("TL_NO_XMEM")) { void tl_luajit_interpreter_only(void); tl_luajit_interpreter_only(); }

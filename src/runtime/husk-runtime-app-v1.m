@@ -319,6 +319,16 @@ static int32_t attach_web(void *screen, void *container, float scale, int32_t fr
 }
 static int32_t web_hit(float x, float y) { return running() && tl_web_hit(x, y); }
 static int32_t web_axes(float x, float y) { return running() ? tl_web_parent_scroll_axes(x, y) : 0; }
+static int32_t resize_app(int32_t width, int32_t height, char *error, size_t capacity)
+{
+    if (error && capacity) error[0] = '\0';
+    if (width <= 0 || height <= 0 || width > 16384 || height > 16384)
+        return error_result(HUSK_RUNTIME_INVALID_ARGUMENT, error, capacity, @"invalid surface dimensions");
+    if (![NSThread isMainThread] || !running())
+        return error_result(HUSK_RUNTIME_INVALID_STATE, error, capacity, @"resize requires a running app and the host main thread");
+    tl_javaapp_resize(width, height);
+    return HUSK_RUNTIME_OK;
+}
 
 static const husk_runtime_app_api_v1 g_app_api = {
     .struct_size = sizeof(husk_runtime_app_api_v1), .abi_version = HUSK_RUNTIME_APP_ABI_V1,
@@ -326,7 +336,7 @@ static const husk_runtime_app_api_v1 g_app_api = {
     .touch = touch, .key = key, .back = back, .text = text, .text_delete = text_delete,
     .text_action = text_action, .text_command = text_command, .keyboard_closed = keyboard_closed, .pause = pause_app,
     .set_insets = insets, .documents_picked = picked, .frames = frames, .ended = ended,
-    .attach_web = attach_web, .web_hit = web_hit, .web_parent_scroll_axes = web_axes
+    .attach_web = attach_web, .web_hit = web_hit, .web_parent_scroll_axes = web_axes, .resize = resize_app
 };
 
 const husk_runtime_app_api_v1 *husk_runtime_get_app_api(uint32_t requested_abi, uint32_t caller_table_size)

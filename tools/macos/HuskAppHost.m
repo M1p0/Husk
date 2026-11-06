@@ -2,10 +2,12 @@
 /* One AppKit process per installed APK. Only the versioned public ABI is used. */
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/CATransaction.h>
 #import <Metal/Metal.h>
 #include <dlfcn.h>
 #include <pthread.h>
 #include <mach/mach.h>
+#include <math.h>
 #include "../../src/runtime-api/husk-runtime-app-v1.h"
 #include "runtime-bundle.h"
 
@@ -201,6 +203,34 @@ static int startup_error(NSString *message, int code)
 - (BOOL)isFlipped { return YES; }
 @end
 
+/* Metal, native WebViews and input all use the window's current point bounds.
+ * The runtime receives a new pixel size at the original Android density. */
+@interface HuskViewport : HuskContainer
+@property HuskContainer *canvas;
+@property (copy) void (^onResize)(void);
+- (instancetype)initWithSurfaceSize:(NSSize)size;
+@end
+@implementation HuskViewport
+- (instancetype)initWithSurfaceSize:(NSSize)size
+{
+    self = [super initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
+    if (self) {
+        self.canvas = [[HuskContainer alloc] initWithFrame:self.bounds];
+        self.canvas.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [self addSubview:self.canvas];
+    }
+    return self;
+}
+- (void)resizeSubviewsWithOldSize:(NSSize)oldSize
+{
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    [super resizeSubviewsWithOldSize:oldSize];
+    if (self.onResize) self.onResize();
+    [CATransaction commit];
+}
+@end
+
 @interface HuskApp : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property NSWindow *window;
 @property HuskScreen *screen;
@@ -209,6 +239,8 @@ static int startup_error(NSString *message, int code)
 @property unsigned long long controlOffset;
 @property NSString *controlRemainder;
 @property id executionActivity;
+@property NSSize runtimeSize;
+- (void)resizeSurface;
 - (void)back:(id)sender;
 - (void)capture:(NSString *)path;
 - (void)control:(NSDictionary *)command;
@@ -296,6 +328,7 @@ static void *start_app(void *unused)
         dispatch_async(dispatch_get_main_queue(), ^{
             if (result) { fail(failureMessage); return; }
             running = YES;
+            [host resizeSurface];
             host.window.title = app_config[@"display_name"];
             status(nil);
         });
@@ -304,28 +337,47 @@ static void *start_app(void *unused)
 }
 
 @implementation HuskApp
+- (void)resizeSurface
+{
+    NSSize points = self.screen.bounds.size;
+    NSSize pixels = NSMakeSize(round(points.width * surface_scale), round(points.height * surface_scale));
+    if (pixels.width <= 0 || pixels.height <= 0) return;
+    ((CAMetalLayer *)self.screen.layer).drawableSize = pixels;
+    if (!running || stopping || NSEqualSizes(pixels, self.runtimeSize)) return;
+    char error[512] = {0};
+    if (app_api->resize((int32_t)pixels.width, (int32_t)pixels.height, error, sizeof(error))) {
+        fail(str(error)); return;
+    }
+    self.runtimeSize = pixels;
+}
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
 {
     (void)notification;
     CGFloat width = [app_config[@"width"] doubleValue] / surface_scale;
     CGFloat height = [app_config[@"height"] doubleValue] / surface_scale;
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, width, height)
-        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
         backing:NSBackingStoreBuffered defer:NO];
+    self.window.contentMinSize = NSMakeSize(MIN(width, 180), MIN(height, 240));
+    self.window.contentMaxSize = NSMakeSize(16384 / surface_scale, 16384 / surface_scale);
+    self.runtimeSize = NSMakeSize([app_config[@"width"] intValue], [app_config[@"height"] intValue]);
     self.window.title = [app_config[@"display_name"] stringByAppendingString:@" · 启动中"];
     self.window.delegate = self;
     self.window.releasedWhenClosed = NO;
     self.window.backgroundColor = NSColor.blackColor;
     NSRect bounds = NSMakeRect(0, 0, width, height);
-    HuskContainer *root = [[HuskContainer alloc] initWithFrame:bounds];
+    HuskViewport *root = [[HuskViewport alloc] initWithSurfaceSize:bounds.size];
     self.web = [[HuskContainer alloc] initWithFrame:bounds];
     self.screen = [[HuskScreen alloc] initWithFrame:bounds];
+    self.web.autoresizingMask = self.screen.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.screen.wantsLayer = YES;
     CAMetalLayer *metal = (CAMetalLayer *)self.screen.layer;
     metal.device = MTLCreateSystemDefaultDevice(); metal.pixelFormat = MTLPixelFormatBGRA8Unorm;
     metal.framebufferOnly = NO; metal.contentsScale = surface_scale;
     metal.drawableSize = CGSizeMake([app_config[@"width"] intValue], [app_config[@"height"] intValue]);
-    [root addSubview:self.web]; [root addSubview:self.screen];
+    [root.canvas addSubview:self.web]; [root.canvas addSubview:self.screen];
+    __weak HuskApp *weakSelf = self;
+    root.onResize = ^{ [weakSelf resizeSurface]; };
     self.window.contentView = root;
     char error[512] = {0};
     if (app_api->attach_web((__bridge void *)self.screen, (__bridge void *)self.web, surface_scale, 1, error, sizeof(error))) { fail(str(error)); return; }
@@ -379,6 +431,13 @@ static void *start_app(void *unused)
     NSString *kind = command[@"action"];
     if ([kind isEqual:@"quit"]) { [NSApp terminate:nil]; return; }
     if ([kind isEqual:@"shot"]) { [self capture:command[@"path"]]; return; }
+    if ([kind isEqual:@"resize"]) {
+        double width = [command[@"width"] doubleValue], height = [command[@"height"] doubleValue];
+        NSSize minimum = self.window.contentMinSize, maximum = self.window.contentMaxSize;
+        if (width >= minimum.width && height >= minimum.height && width <= maximum.width && height <= maximum.height)
+            [self.window setContentSize:NSMakeSize(width, height)];
+        return;
+    }
     if (!running || stopping) return;
     fprintf(stderr, "host control: %s\n", kind.UTF8String);
     if ([kind isEqual:@"native_click"]) {
@@ -526,7 +585,7 @@ int main(int argc, char **argv)
             !app_api->start || !app_api->stop || !app_api->state || !app_api->attach_web || !app_api->web_hit ||
             !app_api->touch || !app_api->key || !app_api->back || !app_api->text || !app_api->text_delete ||
             !app_api->text_action || !app_api->text_command || !app_api->keyboard_closed || !app_api->pause || !app_api->set_insets ||
-            !app_api->documents_picked || !app_api->frames || !app_api->ended) return startup_error(@"当前运行库与此应用外壳不兼容，请选择兼容版本或更新应用外壳。", 3);
+            !app_api->documents_picked || !app_api->frames || !app_api->ended || !app_api->resize) return startup_error(@"当前运行库缺少此应用外壳需要的接口（包括窗口尺寸更新），请先选择新版兼容运行库。", 3);
         const husk_runtime_info_v1 *info = runtime_api->get_info();
         if (!info || info->struct_size < sizeof(*info) || info->abi_version != 1 ||
             ![str(info->host_target) isEqual:@"macos-arm64"] ||

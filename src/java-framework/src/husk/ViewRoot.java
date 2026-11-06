@@ -195,6 +195,13 @@ public final class ViewRoot implements ViewParent {
     }
     static int screenW() { return Native.screenWidth(); }
     static int screenH() { return Native.screenHeight(); }
+    public static void screenResized() {
+        for (ViewRoot r : new ArrayList<>(sRoots)) {
+            r.mView.dispatchConfigurationChanged(r.mView.getResources().getConfiguration());
+            r.mView.requestLayout();
+            r.requestApplyInsets();
+        }
+    }
 
     // ---- the frame
     public static void scheduleFrame() {
@@ -317,6 +324,7 @@ public final class ViewRoot implements ViewParent {
         int sw = screenW(), sh = screenH();
         if (sScreen == null || sScreen.getWidth() != sw || sScreen.getHeight() != sh) {
             if (sCanvas != null) sCanvas.huskRelease();
+            if (sScreen != null) sScreen.recycle();
             sScreen = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888);
             sCanvas = new Canvas(sScreen);
         }

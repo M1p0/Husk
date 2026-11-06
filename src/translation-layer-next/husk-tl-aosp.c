@@ -12,6 +12,7 @@
 #include "husk-tl-servicemanager.h"
 
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -25,7 +26,7 @@ void tl_log_line(const char *fmt, ...);
 
 static bool g_using;
 static char g_pkg[200];
-static int g_width = 1080, g_height = 1920;
+static atomic_int g_width = 1080, g_height = 1920;
 
 static bool readable(const char *p) { return p && p[0] && access(p, R_OK) == 0; }
 

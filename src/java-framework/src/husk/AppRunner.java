@@ -340,7 +340,7 @@ public final class AppRunner {
     }
 
     // ---- input from Husk
-    /** events: [n, then n x (phase, id, xbits, ybits)] -- phase 0 down, 1 move, 2 up, 3 cancel; 4 key (id = code, x = down); 5 back; 6 host pause (id 1) / resume (0); 7 text waiting; 8 insets changed; 9 web view events waiting */
+    /** events: [n, then n x (phase, id, xbits, ybits)] -- phase 0 down, 1 move, 2 up, 3 cancel; 4 key (id = code, x = down); 5 back; 6 host pause (id 1) / resume (0); 7 text waiting; 8 insets changed; 9 web view events waiting; 10 screen resized */
     private static void deliver(int[] ev) {
         int n = ev[0];
         for (int k = 0; k < n; k++) {
@@ -352,6 +352,7 @@ public final class AppRunner {
                 if (phase == 7) { InputMethods.deliverPending(); continue; }
                 if (phase == 8) { applyInsets(); continue; }
                 if (phase == 9) { Web.deliver(); continue; }
+                if (phase == 10) { screenResized(); continue; }
                 if (phase == 4) {
                     long t = SystemClock.uptimeMillis();
                     KeyEvent ke = new KeyEvent(t, t, ev[3 + 4 * k] != 0 ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP, id, 0);
@@ -364,6 +365,14 @@ public final class AppRunner {
                 throw e;
             }
         }
+    }
+    private static void screenResized() {
+        android.content.res.Resources.huskScreenResized();
+        if (sApp != null) sApp.onConfigurationChanged(new android.content.res.Configuration(sApp.getResources().getConfiguration()));
+        for (Activity a : new ArrayList<>(sStack)) {
+            a.onConfigurationChanged(new android.content.res.Configuration(a.getResources().getConfiguration()));
+        }
+        ViewRoot.screenResized();
     }
     /** The screen's notch / home indicator areas and the keyboard, from the host. */
     private static void applyInsets() {

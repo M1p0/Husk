@@ -27,6 +27,8 @@ flowchart TB
 
 macOS 外壳包含独立 Dock/窗口身份、真实 CAMetalLayer 呈现、原生 WKWebView、鼠标点击/拖动/滚轮、键盘及中文输入提交、剪贴板、系统分享、打开 URL 和文件选择。文件选择结果复制进本 App 的 `data/imports`；Android 模拟外部存储位于本 App 的 `data/sdcard`。不会因失去焦点而结束或暂停 App。
 
+独立应用窗口支持拖动边框调整大小。窗口点尺寸乘以原有 Android density 得到新的渲染像素尺寸，Metal drawable、原生窗口尺寸、Android DisplayMetrics/Configuration 和 ViewRoot 随之更新；SurfaceView/TextureView 通过现有的尺寸变化回调通知 Flutter 等渲染引擎。原生 WebView 跟随 Android 布局铺满其区域，不额外加入固定比例黑边。配置变化通过当前 Activity 的 `onConfigurationChanged` 和视图重排处理，不在每次拖动时重建 Activity。修改窗口宿主后，已安装应用和图形安装器内捆绑的 `HuskAppHost` 需要更新，并选择带 `resize` 接口的新版 Runtime；已打开的旧进程需完全退出后重新打开。
+
 ## 本地构建与安装
 
 已提供图形安装器，支持双击 APK、查看全部已登记应用、搜索、启动和卸载。当前安装位置为 `~/Applications/Husk APK Installer.app`；图形安装默认生成 `~/Applications/Husk Apps/<应用名>.app`。使用、构建和实测见[APK 安装器与管理](14-macos-apk-installer.md)。以下保留命令行与 Runtime 构建方式。
@@ -117,6 +119,8 @@ sequenceDiagram
 
 冻结的 app-v1 表前缀允许将来在尾部增加可选接口；新增运行库不能改变既有字段顺序或扩大这个最低前缀要求。新外壳需要更大表时仍检查实际 `struct_size`，不兼容版本会在 Guest 执行前显示错误。首次开发期的候选包不作为已发布的 ABI 兼容承诺。
 
+窗口尺寸更新使用 ABI-1 表尾的 `resize(width, height, error, capacity)`，冻结前缀保持不变，旧宿主仍可加载新版 Runtime。新版可调整窗口的宿主需要此接口；在主线程通知 Runtime 后，配置回调和布局更新排到 Java 主线程。渲染线程读取原子尺寸快照，旧的 Java 屏幕位图在替换时显式回收。
+
 ABI 使用 `struct_size` 和独立版本号协商，字符串在 start/configure 时复制，宿主视图、layer、回调 userdata 保留到进程退出。剪贴板用调用方缓冲区，避免跨库内存释放约定。start/stop 在 worker 调用，主线程持续运行；一个进程只允许一次 APK 启动尝试。错误或完全关闭都结束该 App 的进程，不复用半初始化状态。
 
 APK 明确调用 `exit(status)` 时，独立应用 profile 直接按该状态结束本进程，不先取消其他工作线程。这样保留 APK 的退出语义，避免本已请求 `exit(0)` 的 Flutter 窗口因宿主先取消 Go 数据库 I/O，又被后台 panic 改成 `exit(2)`。普通 Activity.finish 和窗口关闭仍可走宿主的清理路径。
@@ -141,9 +145,12 @@ APK 明确调用 `exit(status)` 时，独立应用 profile 直接按该状态结
 
 ```sh
 sh tests/runtime/run_macos.sh
+python3 -B tests/macos/test_window_resize.py
 python3 tests/translation-layer/run_guest_tls.py
 python3 tests/translation-layer/run_native_window_lifetime.py
 python3 tests/java-framework/run.py
 ```
+
+上述窗口回归检查五种尺寸下的真实 AppKit 视图、drawable、输入和原生覆盖层。另可加 `--app /absolute/path/Husk\ Java\ Fixture.app --runtime /absolute/path/runtime --out /absolute/task/evidence`，启动源码 fixture，核对实际 EGL 帧像素尺寸、Android 配置、原生 WebView 宽度和按钮点击，并保留真实窗口截图。
 
 托管 CI/CD 保持关闭；这些都是本地手动命令。

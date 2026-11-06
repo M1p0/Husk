@@ -6,9 +6,13 @@
 
 - `build/macos-apps/Pikapika.app`，原 APK SHA256 为 `684b204ac3cdd6a3d5650debdd7dda31158b841b4d1dc13b3562e5ff4984f20a`。
 - `build/macos-apps/Jasmine.app`，原 APK SHA256 为 `d5b6eb4bbfbca5f7ab62b9f09707d51045c71566a7a9e281df1a59554c0ae0fa`。
-- 当前运行库：`build/macos-runtime/macos-app-close-20261106-v1`、`macos-app-close-20261106-v2`，默认选中后者。
+- 当前默认运行库：`build/macos-runtime/macos-app-resize-20261106-v1`；窗口关闭修复的 `macos-app-close-20261106-v1/v2` 仍保留。
 
-两套当前 Runtime 都是 `macos-app` profile，各包含 407 个带 SHA256 的 artifact，目录为 `0555`，完整源码基线为 `fa155f28bcc973cde4968114ff1313ea512bf8d6`，native 源码摘要为 `8bce2bb0470f084f2e1e3da118c8dd765ceeb92894870549b730a90b5df5c101`。两套 `.app` 仍使用先前构建的轻量宿主，通过严格签名验证；宿主与 APK 的摘要保持不变，新进程仅加载新运行库，未重新安装或打包 APK。旧的 `macos-app-release-20261106-v1/v2` 保留为历史版本，没有覆盖。
+窗口关闭修复的两套 Runtime 都是 `macos-app` profile，各包含 407 个带 SHA256 的 artifact，目录为 `0555`，源码基线为 `fa155f28bcc973cde4968114ff1313ea512bf8d6`，native 源码摘要为 `8bce2bb0470f084f2e1e3da118c8dd765ceeb92894870549b730a90b5df5c101`。这一阶段没有更换宿主或 APK。旧的 `macos-app-release-20261106-v1/v2` 也保留为历史版本，没有覆盖。
+
+后续窗口尺寸修复发布 `macos-app-resize-20261106-v1`，同为 407 个 artifact；构建基线为 `ffb31ed5e1fe9117e85ab60c4c77162b572755c2` 加本次工作区修改，native 源码摘要为 `6d17dd624e32e1f5c15980dbd5f624ab44ac71ac747a79557b262f0141eea2fe`。已更新 Jasmine、Pikapika、鸣潮和图形安装器捆绑的宿主，严格签名与 APK 内容摘要通过。已运行的旧进程保持其原版本，需要完全退出重开。
+
+窗口修复新增验收：五种 AppKit 尺寸下的 drawable/Runtime 通知/输入与覆盖层；真实 Java fixture 的 EGL 帧尺寸、DisplayMetrics/Configuration、全宽原生 WebView 与点击；Jasmine 和 Pikapika 的 `720×1280 → 1520×1280 → 1000×1560 → 720×1280` 实际帧及布局变化。最终从正式安装位置启动、使用默认 Runtime 再次通过宽窗口验证，Pikapika 点击重排后的“7”按钮正确显示 7。Java 框架回归、app ABI 前缀兼容和 ASan NativeWindow/EGL 引用回归通过。证据在 `/Users/m1p0/Developer/temp/codex/Husk/window-resize-b7330d2e/evidence/`，包含截图、日志、结果与更新前宿主备份。鸣潮只验证宿主更新和签名，未进行游戏界面验收；下文的完整版本切换、后台与业务路径验收仍对应此前的 closefix 版本。
 
 设计、运行方法与升级流程见[实现文档](11-macos-independent-apps.md)，整体架构与后续执行顺序见[设计](07-independent-app-runtime-design.md)和[执行方案](08-independent-app-runtime-execution-plan.md)。
 

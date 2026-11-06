@@ -22,6 +22,7 @@ public class Resources {
     static ResTable sApp, sFramework;
     static final Object sLock = new Object();
     private static Resources sSystem;
+    private static final java.util.ArrayList<java.lang.ref.WeakReference<Resources>> sInstances = new java.util.ArrayList<>();
 
     private final AssetManager mAssets;
     private final DisplayMetrics mMetrics = new DisplayMetrics();
@@ -43,6 +44,7 @@ public class Resources {
         if (c != null) mConfig.updateFrom(c);
         updateCfg();
         loadTables();
+        synchronized (sLock) { sInstances.add(new java.lang.ref.WeakReference<>(this)); }
     }
     private void updateCfg() {
         // Android's ResourcesImpl: the configuration's density is the metrics' density. A Resources made with a fresh DisplayMetrics
@@ -86,6 +88,27 @@ public class Resources {
         if (m != null) mMetrics.setTo(m);
         updateCfg();
         mDrawableCache.clear(); mColorCache.clear();
+    }
+    /** Update existing Resources objects when the host window changes size. */
+    public static void huskScreenResized() {
+        Configuration device = Configuration.huskDevice();
+        int width = husk.Native.screenWidth(), height = husk.Native.screenHeight();
+        synchronized (sLock) {
+            for (int i = sInstances.size() - 1; i >= 0; i--) {
+                Resources r = sInstances.get(i).get();
+                if (r == null) { sInstances.remove(i); continue; }
+                Configuration c = new Configuration(r.mConfig);
+                c.orientation = device.orientation;
+                float density = r.mMetrics.density > 0 ? r.mMetrics.density : husk.Native.density();
+                c.screenWidthDp = (int) (width / density);
+                c.screenHeightDp = (int) (height / density);
+                c.smallestScreenWidthDp = Math.min(c.screenWidthDp, c.screenHeightDp);
+                c.screenLayout = (c.screenLayout & ~(Configuration.SCREENLAYOUT_SIZE_MASK | Configuration.SCREENLAYOUT_LONG_MASK))
+                    | (device.screenLayout & (Configuration.SCREENLAYOUT_SIZE_MASK | Configuration.SCREENLAYOUT_LONG_MASK));
+                r.mMetrics.widthPixels = width; r.mMetrics.heightPixels = height;
+                r.updateConfiguration(c, null);
+            }
+        }
     }
     public final void flushLayoutCache() {}
     public ResTable.Config huskConfig() { return mCfg; }

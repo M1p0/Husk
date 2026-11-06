@@ -90,6 +90,10 @@ typedef struct husk_runtime_app_api_v1 {
                          int32_t fresh, char *error, size_t error_capacity);
     int32_t (*web_hit)(float x, float y);
     int32_t (*web_parent_scroll_axes)(float x, float y);
+    /* Optional ABI-1 tail. Main-thread host notification, in surface pixels;
+     * density stays unchanged. Queues configuration/layout on the guest main
+     * thread. Check struct_size before reading this entry on older runtimes. */
+    int32_t (*resize)(int32_t width, int32_t height, char *error, size_t error_capacity);
 } husk_runtime_app_api_v1;
 
 /* Freeze this prefix when adding OPTIONAL entries in a future build. Returning
