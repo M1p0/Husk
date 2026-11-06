@@ -8,7 +8,8 @@ import android.view.inputmethod.InputConnection;
 /**
  * The soft keyboard: the host's keyboard comes up for a focused view that edits text, and what is typed goes to that view's input
  * connection (text committed, backspace as a delete before the cursor, return as the editor action). Text arrives through
- * Native.pollText as a list of strings: "t<text>" commit, "d" delete one, "e" the editor action.
+ * Native.pollText as a list of strings: "t<text>" commit, "d" delete one, "e" the editor action,
+ * "c1"/"c2"/"c3" select all/copy/cut through the focused InputConnection.
  */
 public final class InputMethods {
     private static View sFocused;
@@ -52,6 +53,12 @@ public final class InputMethods {
             if (sConn == null) { typeKeys(k, it); continue; }
             switch (k) {
             case 't': sConn.commitText(it.substring(1), 1); break;
+            case 'c': {
+                int command = it.length() == 2 ? it.charAt(1) - '0' : 0;
+                int action = command == 1 ? android.R.id.selectAll : command == 2 ? android.R.id.copy : command == 3 ? android.R.id.cut : 0;
+                if (action != 0) sConn.performContextMenuAction(action);
+                break;
+            }
             case 'd': {
                 CharSequence sel = sConn.getSelectedText(0);
                 if (sel != null && sel.length() > 0) sConn.commitText("", 1);

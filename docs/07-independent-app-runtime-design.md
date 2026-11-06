@@ -1,11 +1,12 @@
 # Husk 独立应用运行环境：架构与设计
 
-状态：**目标设计，M1 的 macOS headless-bootstrap 初版已实现并本地验证；独立 App 外壳、完整 APK 启动接口与 iOS 接入尚未完成。Mac 测试不构成 iOS 能力或隔离效果的验收。**
+状态：**目标设计；macOS 已实现公共 Runtime、稳定 APK 启动接口、独立 AppKit 外壳和安装/版本选择器，正在完成真实 APK 集成验收。系统沙箱、硬内存限额和 iOS 接入仍未交付。Mac 功能测试不构成这些能力的验收。**
 
 日期：2026-11-06。源码核对基线：`fcda33e2ee6c63ad2742199016d49bcad2730672`。
 
 配套：[执行方案与验收计划](08-independent-app-runtime-execution-plan.md)。
 当前实现：[macOS M1 入口、验证与限制](09-macos-runtime-m1.md)。
+独立外壳与安装：[macOS 实现与验收](11-macos-independent-apps.md)。
 本文约束后续实现；[早期 QEMU 架构](00-architecture.md)及已有单宿主运行方式继续作为历史和现状资料。
 
 ## 1. 产品目标与保证范围

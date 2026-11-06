@@ -90,13 +90,16 @@ String allocation fault injection: `sh tests/translation-layer/run_string_oom.sh
 - **Emulation** — a full LineageOS guest under QEMU, for apps the translation layer cannot run yet.
 - **PS4** — fake packages and game folders on iOS 17.4+.
 
-## Independent APK apps: proposed design
+## Independent APK apps: macOS development host
 
-The proposed jailbreak architecture gives each APK its own iOS app identity and
-process, with a versioned Husk runtime loaded at process startup. This is a
-design and execution plan. An initial macOS headless-bootstrap runtime package
-and dynamic-loading probe are implemented; independent app shells, the stable
-APK launch interface, resource enforcement and iOS validation remain future work.
+The macOS implementation gives each APK an independent `.app`, process, window
+and data directory. A small AppKit host loads a complete versioned Husk runtime
+through public C interfaces at cold start. The installer extracts the APK's
+identity and icon without changing its contents. Runtime-only updates select a
+new immutable version for new processes; running apps keep their original one.
+The Mac host includes Metal presentation, native WebViews, mouse/keyboard and
+text input, clipboard, sharing and file selection. It does not yet provide an
+OS sandbox or system hard memory limits.
 Development starts with a macOS prototype of the shared core and protocols;
 iOS-specific registration, sandboxing, JIT, memory and background behavior still
 require separate target-device validation.
@@ -104,6 +107,8 @@ require separate target-device validation.
 - [架构与设计：独立应用、资源隔离及运行库升级](docs/07-independent-app-runtime-design.md)
 - [执行方案：能力探针、分阶段实现与验收](docs/08-independent-app-runtime-execution-plan.md)
 - [macOS M1：本地构建、动态加载验证与当前限制](docs/09-macos-runtime-m1.md)
+- [macOS 独立 App：构建、安装、升级、接口与实际验收](docs/11-macos-independent-apps.md)
+- [DVM 内存回收：已确认缺口与正确实施步骤](docs/12-dvm-memory-reclamation-plan.md)
 
 ## Install
 

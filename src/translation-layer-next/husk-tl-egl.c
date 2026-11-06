@@ -19,6 +19,8 @@ int tl_nwindow_width(void *window);
 void *tl_nwindow_texture(void *window);
 void tl_nwindow_post(void *window, const void *rgba, int w, int h, bool flip);
 int tl_nwindow_height(void *window);
+void tl_nwindow_acquire(void *window);
+void tl_nwindow_release(void *window);
 
 typedef void *EGLDisplay, *EGLSurface, *EGLContext, *EGLConfig, *EGLNativeWindowType;
 typedef int32_t EGLint;
@@ -31,6 +33,7 @@ typedef unsigned EGLBoolean, EGLenum;
 #define EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE 0x3489
 #define EGL_FALSE 0
 #define EGL_TRUE 1
+static __thread EGLint g_wrapper_error;
 
 static struct {
     char egl_path[600], gles_path[600];
@@ -72,6 +75,7 @@ static EGLint (*a_eglGetError)(void);
 static EGLBoolean (*a_eglWaitGL)(void);
 static EGLBoolean (*a_eglWaitNative)(EGLint);
 static EGLBoolean (*a_eglReleaseThread)(void);
+static void (*a_glFinish)(void);
 static void (*a_glReadPixels)(int, int, int, int, unsigned, unsigned, void *);
 static void (*a_glGetIntegerv)(unsigned, int *);
 static void (*a_glBindFramebuffer)(unsigned, unsigned);
@@ -99,6 +103,7 @@ bool tl_egl_init(const char *egl_path, const char *gles_path, const char *frame_
     a_eglGetPlatformDisplayEXT = a_eglGetProcAddress ? a_eglGetProcAddress("eglGetPlatformDisplayEXT") : NULL;
     if (!a_eglGetPlatformDisplayEXT) { tl_log_line("egl: ANGLE has no eglGetPlatformDisplayEXT"); pthread_mutex_unlock(&E.lock); return false; }
     /* GLES functions this layer itself calls (frame capture) */
+    a_glFinish = a_eglGetProcAddress("glFinish");
     a_glReadPixels = a_eglGetProcAddress("glReadPixels");
     a_glGetIntegerv = a_eglGetProcAddress("glGetIntegerv");
     a_glBindFramebuffer = a_eglGetProcAddress("glBindFramebuffer");
@@ -106,7 +111,7 @@ bool tl_egl_init(const char *egl_path, const char *gles_path, const char *frame_
     if (frame_dir) { snprintf(E.frame_dir, sizeof(E.frame_dir), "%s", frame_dir); E.latest_only = frame_every < 0; E.frame_every = frame_every != 0 ? (frame_every < 0 ? -frame_every : frame_every) : 60; }
     E.ready = true;
     pthread_mutex_unlock(&E.lock);
-    tl_log_line("egl: ANGLE loaded%s%s", frame_dir ? ", off-screen, frames to " : "", frame_dir ? frame_dir : "");
+    tl_log_line("egl: ANGLE loaded%s%s", frame_dir ? ", frame capture to " : "", frame_dir ? frame_dir : "");
     return true;
 }
 
@@ -249,7 +254,11 @@ static EGLContext w_eglGetCurrentContext(void) { return a_eglGetCurrentContext()
 static EGLSurface w_eglGetCurrentSurface(EGLint w) { return a_eglGetCurrentSurface(w); }
 static EGLDisplay w_eglGetCurrentDisplay(void) { return a_eglGetCurrentDisplay(); }
 static EGLenum w_eglQueryAPI(void) { return a_eglQueryAPI(); }
-static EGLint w_eglGetError(void) { return E.ready ? a_eglGetError() : 0x3001; }
+static EGLint w_eglGetError(void)
+{
+    if (g_wrapper_error) { EGLint error = g_wrapper_error; g_wrapper_error = 0; return error; }
+    return E.ready ? a_eglGetError() : 0x3001;
+}
 
 /* The guest's ANativeWindow: a Metal layer on the phone, an off-screen buffer for tests. */
 static bool g_offscreen_windows;
@@ -263,7 +272,11 @@ static void *tex_window_of(EGLSurface s)
 {
     void *w = NULL;
     pthread_mutex_lock(&g_tex_lock);
-    for (int i = 0; i < MAX_TEX_SURFACES; i++) if (g_tex_surf[i].s == s && s) { w = g_tex_surf[i].win; break; }
+    for (int i = 0; i < MAX_TEX_SURFACES; i++) if (g_tex_surf[i].s == s && s) {
+        w = g_tex_surf[i].win;
+        tl_nwindow_acquire(w); /* Borrow beyond this lock, including a concurrent destroy. */
+        break;
+    }
     pthread_mutex_unlock(&g_tex_lock);
     return w;
 }
@@ -298,6 +311,10 @@ static const uint8_t *read_back(EGLDisplay d, EGLSurface s, EGLint *pw, EGLint *
     a_glBindFramebuffer(0x8CA8 /* GL_READ_FRAMEBUFFER */, 0);
     a_glPixelStorei(0x0D05, 1);
     a_glReadPixels(0, 0, w, h, 0x1908 /* GL_RGBA */, 0x1401 /* GL_UNSIGNED_BYTE */, buf);
+    /* Complete this ANGLE/Metal frame before another context consumes it.
+     * The CPU bytes already exist; this boundary fixes stale final frames
+     * across the offscreen compositor handoff, rather than CPU read timing. */
+    if (a_glFinish) a_glFinish();
     a_glPixelStorei(0x0D05, old_pack);
     a_glBindFramebuffer(0x8CA8, (unsigned)old_fb);
     *pw = w; *ph = h;
@@ -310,9 +327,20 @@ static EGLSurface w_eglCreateWindowSurface(EGLDisplay d, EGLConfig cfg, void *wi
         EGLint pb[] = { EGL_WIDTH, tl_nwindow_width(win), EGL_HEIGHT, tl_nwindow_height(win), EGL_NONE };
         EGLSurface s = a_eglCreatePbufferSurface(d, cfg, pb);
         if (s) {
+            bool registered = false;
             pthread_mutex_lock(&g_tex_lock);
-            for (int i = 0; i < MAX_TEX_SURFACES; i++) if (!g_tex_surf[i].s) { g_tex_surf[i].s = s; g_tex_surf[i].win = win; break; }
+            for (int i = 0; i < MAX_TEX_SURFACES; i++) if (!g_tex_surf[i].s) {
+                tl_nwindow_acquire(win); /* EGL retains the window independently of its caller. */
+                g_tex_surf[i].s = s; g_tex_surf[i].win = win;
+                registered = true;
+                break;
+            }
             pthread_mutex_unlock(&g_tex_lock);
+            if (!registered) {
+                if (!a_eglDestroySurface(d, s)) tl_log_line("egl: failed to destroy unregistered texture surface %p", s);
+                g_wrapper_error = 0x3003; /* EGL_BAD_ALLOC: no untracked surface escapes. */
+                s = NULL;
+            }
         }
         tl_log_line("egl: TextureView window %dx%d -> off-screen surface %p", pb[1], pb[3], s);
         return s;
@@ -328,7 +356,9 @@ static EGLSurface w_eglCreateWindowSurface(EGLDisplay d, EGLConfig cfg, void *wi
         tl_log_line("egl: window %dx%d -> surface %p, composited under the app's views", pb[1], pb[3], s);
         return s;
     }
-    if (E.frame_dir[0] || g_offscreen_windows) {
+    /* Capture can accompany a real host window. The headless harness has no
+     * native layer; a desktop App must still present when capture is enabled. */
+    if ((E.frame_dir[0] && !tl_nwindow_native(win)) || g_offscreen_windows) {
         EGLint pb[] = { EGL_WIDTH, tl_nwindow_width(win), EGL_HEIGHT, tl_nwindow_height(win), EGL_NONE };
         EGLSurface s = a_eglCreatePbufferSurface(d, cfg, pb);
         if (!s) {
@@ -350,12 +380,22 @@ static EGLSurface w_eglCreateWindowSurface(EGLDisplay d, EGLConfig cfg, void *wi
 static EGLBoolean w_eglDestroySurface(EGLDisplay d, EGLSurface s)
 {
     pthread_mutex_lock(&g_tex_lock);
-    for (int i = 0; i < MAX_TEX_SURFACES; i++) if (g_tex_surf[i].s == s) g_tex_surf[i].s = NULL;
+    /* Serialize backend destruction and removal with insertion, so a newly
+     * allocated surface reusing this address cannot lose its registration. */
+    EGLBoolean destroyed = a_eglDestroySurface(d, s);
+    if (!destroyed) { pthread_mutex_unlock(&g_tex_lock); return destroyed; }
+    void *window = NULL;
+    for (int i = 0; i < MAX_TEX_SURFACES; i++) if (g_tex_surf[i].s == s && s) {
+        window = g_tex_surf[i].win;
+        g_tex_surf[i].s = NULL; g_tex_surf[i].win = NULL;
+        break;
+    }
     bool comp = false;
     for (int i = 0; i < MAX_COMP_SURFACES && s; i++) if (g_comp_surf[i] == s) { g_comp_surf[i] = NULL; comp = true; }
     pthread_mutex_unlock(&g_tex_lock);
+    tl_nwindow_release(window);
     if (comp && tl_javaapp_app_pixels) tl_javaapp_app_pixels(NULL, 0, 0);
-    return a_eglDestroySurface(d, s);
+    return destroyed;
 }
 static EGLSurface w_eglCreatePbufferSurface(EGLDisplay d, EGLConfig c, const EGLint *at) { return a_eglCreatePbufferSurface(d, cfg_real(c), at); }
 
@@ -428,7 +468,7 @@ static void tex_swap(EGLDisplay d, EGLSurface s, void *win)
 static EGLBoolean w_eglSwapBuffers(EGLDisplay d, EGLSurface s)
 {
     void *texwin = tex_window_of(s);
-    if (texwin) { tex_swap(d, s, texwin); return EGL_TRUE; }
+    if (texwin) { tex_swap(d, s, texwin); tl_nwindow_release(texwin); return EGL_TRUE; }
     unsigned long n = atomic_fetch_add(&E.presented, 1) + 1;
     if (comp_surface(s)) {
         EGLint w = 0, h = 0;
@@ -450,7 +490,7 @@ static EGLBoolean w_eglSwapBuffers(EGLDisplay d, EGLSurface s)
         fprintf(stderr, "egl: calls so far, by function: %s\n", hist);
     }
     if (E.frame_dir[0] && (n % (unsigned long)E.frame_every == 0 || n <= 3)) save_frame(d, s, n);
-    return E.frame_dir[0] ? EGL_TRUE : a_eglSwapBuffers(d, s);
+    return a_eglSwapBuffers(d, s);
 }
 
 /* The damage-region swaps (Flutter's engine, HWUI): the same as a whole swap here -- through the wrapper, so a frame reaches the

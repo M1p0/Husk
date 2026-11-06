@@ -31,7 +31,7 @@ typedef enum husk_runtime_capability_state {
 
 #define HUSK_RUNTIME_CAP_CONFIGURE (UINT64_C(1) << 0)
 #define HUSK_RUNTIME_CAP_NATIVE_CORE_LINKED (UINT64_C(1) << 1)
-/* Defined for capability discovery; M1 does not advertise APK execution. */
+/* Advertised only by a complete application profile. */
 #define HUSK_RUNTIME_CAP_APK_LAUNCH (UINT64_C(1) << 2)
 
 typedef struct husk_runtime_info_v1 {
@@ -95,9 +95,10 @@ typedef struct husk_runtime_api_v1 {
     int32_t (*close)(husk_runtime_handle *handle, char *error, size_t error_capacity);
 } husk_runtime_api_v1;
 
-/* The sole stable exported entry point. Only ABI 1 and a caller table size at
+/* Stable bootstrap entry point. Only ABI 1 and a caller table size at
  * least sizeof(husk_runtime_api_v1) are accepted. NULL means incompatible.
- * M1 configures a process but does not initialize JIT, Java or an APK. */
+ * This table configures a process without initializing JIT, Java or an APK.
+ * Application profiles expose a separate versioned app getter. */
 __attribute__((visibility("default")))
 const husk_runtime_api_v1 *husk_runtime_get_api(uint32_t requested_abi,
                                              uint32_t caller_table_size);

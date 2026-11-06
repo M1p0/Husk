@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Build a real native-runtime dylib and publish a fixed macOS Runtime version.
 
-This M1 package provides the headless/context-bootstrap profile. It contains the
-current native-runtime code and its available Java/system resources, but does
-not advertise APK launch, a graphics backend, OS sandboxing, or hard memory
-limits. A later host supplies those capabilities after separate validation.
+The headless-bootstrap profile configures a process. The macos-app profile also
+contains the public APK execution bridge and a matching pair of macOS ANGLE
+libraries. Neither profile supplies an OS sandbox or a system hard memory limit.
 """
 
 from __future__ import annotations
@@ -29,6 +28,9 @@ ROOT = Path(__file__).resolve().parents[2]
 TARGET = "macos-arm64"
 LIBRARY = "lib/libHuskRuntime.dylib"
 PROFILE = "headless-bootstrap"
+VSCODE_ANGLE = Path("/Applications/Visual Studio Code.app/Contents/Frameworks/"
+                    "Electron Framework.framework/Versions/A/Libraries")
+VSCODE_LICENSE = Path("/Applications/Visual Studio Code.app/Contents/Resources/LICENSES.chromium.html")
 FRAMEWORKS = (
     "AudioToolbox", "Foundation", "CoreFoundation", "CoreText", "CoreGraphics",
     "Security", "QuartzCore", "Metal", "IOSurface", "ImageIO", "WebKit",
@@ -67,7 +69,8 @@ def source_files() -> list[Path]:
     old = ROOT / "src/translation-layer"
     sources += [old / name for name in
                 ("husk-tl-elf.c", "husk-tl-zip.c", "husk-tl-sound.c")]
-    sources.append(ROOT / "src/runtime/husk-runtime-v1.c")
+    sources += [ROOT / "src/runtime/husk-runtime-v1.c",
+                ROOT / "src/runtime/husk-runtime-app-v1.m"]
     for path in sources:
         if not path.is_file():
             raise ValueError(f"missing Runtime source: {path.relative_to(ROOT)}")
@@ -144,7 +147,7 @@ def publish_exclusive(source: Path, destination: Path) -> None:
         raise OSError(problem, os.strerror(problem), str(destination))
 
 
-def build_library(staging: Path, build_id: str, sources: list[Path]) -> None:
+def build_library(staging: Path, build_id: str, sources: list[Path], profile: str) -> None:
     destination = staging / LIBRARY
     destination.parent.mkdir(parents=True)
     flags = ["xcrun", "--sdk", "macosx", "clang", "-arch", "arm64",
@@ -154,6 +157,7 @@ def build_library(staging: Path, build_id: str, sources: list[Path]) -> None:
              "-I" + str(ROOT / "src/translation-layer-next"),
              "-I" + str(ROOT / "src/runtime-api"),
              f'-DHUSK_RUNTIME_BUILD_ID="{build_id}"',
+             f'-DHUSK_RUNTIME_ENABLE_APPS={int(profile == "macos-app")}',
              "-Wl,-install_name,@rpath/libHuskRuntime.dylib",
              "-Wl,-current_version,1.0", "-Wl,-compatibility_version,1.0"]
     flags += [str(path) for path in sources]
@@ -181,11 +185,52 @@ def build_library(staging: Path, build_id: str, sources: list[Path]) -> None:
             raise ValueError(f"unpackaged host dependency: {dependency}")
 
 
+def package_angle(staging: Path, source: Path, license_file: Path) -> dict:
+    """Freeze a known pair, including its notices; never modify the source app."""
+    destination = staging / "resources/angle"
+    destination.mkdir()
+    provenance = {}
+    for name in ("libEGL.dylib", "libGLESv2.dylib"):
+        original = (source / name).resolve(strict=True)
+        if not original.is_file():
+            raise ValueError(f"missing regular graphics library: {original}")
+        architectures = run(["xcrun", "lipo", "-archs", str(original)], capture=True).split()
+        if "arm64" not in architectures:
+            raise ValueError(f"graphics library has no arm64 slice: {original}")
+        target = destination / name
+        if architectures == ["arm64"]:
+            shutil.copyfile(original, target)
+        else:
+            run(["xcrun", "lipo", str(original), "-thin", "arm64", "-output", str(target)])
+        commands = run(["xcrun", "vtool", "-show-build", str(target)], capture=True)
+        if not re.search(r"\bplatform\s+MACOS\b", commands):
+            raise ValueError(f"graphics library must target macOS: {original}")
+        dependencies = run(["xcrun", "otool", "-L", str(target)], capture=True)
+        for line in dependencies.splitlines()[2:]:
+            dependency = line.strip().split(" (", 1)[0]
+            if not dependency.startswith(("/System/Library/", "/usr/lib/")) and dependency not in {
+                    "@rpath/libEGL.dylib", "@rpath/libGLESv2.dylib", "@loader_path/libEGL.dylib", "@loader_path/libGLESv2.dylib"}:
+                raise ValueError(f"unpackaged graphics dependency: {dependency}")
+            if dependency in {"@rpath/libEGL.dylib", "@rpath/libGLESv2.dylib"}:
+                run(["xcrun", "install_name_tool", "-change", dependency,
+                     "@loader_path/" + dependency.rsplit("/", 1)[1], str(target)])
+        run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(target)])
+        run(["codesign", "--verify", "--strict", str(target)])
+        provenance[name] = {"source": str(original), "source_sha256": digest_file(original)}
+    shutil.copyfile(license_file.resolve(strict=True), destination / "LICENSES.chromium.html")
+    return provenance
+
+
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--store", type=Path, default=ROOT / "build/macos-runtime",
                         help="version repository; default: build/macos-runtime")
     parser.add_argument("--build-id", help="new immutable version ID; existing IDs are never overwritten")
+    parser.add_argument("--profile", choices=("headless-bootstrap", "macos-app"), default=PROFILE)
+    parser.add_argument("--angle-dir", type=Path, default=VSCODE_ANGLE,
+                        help="matching macOS ANGLE pair; used only by macos-app")
+    parser.add_argument("--angle-license", type=Path, default=VSCODE_LICENSE,
+                        help="Chromium/ANGLE third-party notices for that pair")
     parser.add_argument("--java-runtime", type=Path, default=ROOT / "build/java-runtime",
                         help="complete Java guest resource tree; default: build/java-runtime")
     parser.add_argument("--android-system", type=Path, default=ROOT / "build/android-system",
@@ -213,6 +258,10 @@ def main() -> int:
     for relative in BOOT_FILES:
         if not (java / relative).is_file():
             raise ValueError(f"incomplete Java Runtime: missing {relative}")
+    if options.profile == "macos-app":
+        for relative in ("fonts/NotoSansCJK-Regular.ttc", "fonts/NotoSansCJK-OFL.txt"):
+            if not (system / relative).is_file():
+                raise ValueError(f"missing CJK font/notice: {relative}; run python3 tools/runtime/fetch_macos_fonts.py")
     certificate = ROOT / "src/app/Husk/Resources/cacert.pem"
     if not certificate.is_file() or certificate.is_symlink():
         raise ValueError("missing regular cacert.pem resource")
@@ -234,15 +283,17 @@ def main() -> int:
     staging = Path(tempfile.mkdtemp(prefix=f".staging-{build_id}-", dir=store))
     try:
         print(f"Building {build_id}: {len(sources)} real Runtime source files", flush=True)
-        build_library(staging, build_id, sources)
+        build_library(staging, build_id, sources, options.profile)
         resource_root = staging / "resources"
         resource_root.mkdir()
         shutil.copytree(java, resource_root / "java-runtime")
         shutil.copytree(system, resource_root / "android-system")
         shutil.copy2(certificate, resource_root / "cacert.pem")
         shutil.copy2(ROOT / "LICENSE", resource_root / "LICENSE-Husk")
+        graphics = package_angle(staging, options.angle_dir, options.angle_license) if options.profile == "macos-app" else None
         (staging / "include").mkdir()
         shutil.copy2(public_header, staging / "include/husk-runtime-v1.h")
+        shutil.copy2(ROOT / "src/runtime-api/husk-runtime-app-v1.h", staging / "include/husk-runtime-app-v1.h")
         artifacts = {}
         for path in sorted(staging.rglob("*")):
             if path.is_symlink():
@@ -257,16 +308,19 @@ def main() -> int:
             raise ValueError("Runtime source inputs changed during the build; no version was published")
         manifest = {
             "schema": 1, "abi_version": 1, "build_id": build_id,
-            "host_target": TARGET, "profile": PROFILE,
+            "host_target": TARGET, "profile": options.profile,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "source_revision": revision,
             "source_tree_sha256": source_digest,
             "native_sources": [path.relative_to(ROOT).as_posix() for path in sources],
             "features": {"native_core": "included", "context_bootstrap": "supported",
-                         "apk_execution": "unsupported", "graphics_backend": "unsupported",
+                         "apk_execution": "supported" if graphics else "unsupported",
+                         "graphics_backend": "angle-metal" if graphics else "unsupported",
                          "system_memory_limit": "unsupported", "sandbox_isolation": "unverified"},
             "artifacts": artifacts,
         }
+        if graphics:
+            manifest["graphics_provenance"] = graphics
         with (staging / "manifest.json").open("w", encoding="utf-8") as stream:
             json.dump(manifest, stream, ensure_ascii=False, indent=2, sort_keys=True)
             stream.write("\n")
@@ -284,7 +338,7 @@ def main() -> int:
         publish_exclusive(staging, version)
         sync_directory(store)
         print(f"Published: {version}", flush=True)
-        print(f"Profile: {PROFILE}; {len(artifacts)} hashed artifacts; lease: {lease}", flush=True)
+        print(f"Profile: {options.profile}; {len(artifacts)} hashed artifacts; lease: {lease}", flush=True)
         return 0
     finally:
         # Never remove a published version or a lease file: a failed publisher

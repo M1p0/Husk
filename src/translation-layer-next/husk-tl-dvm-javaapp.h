@@ -49,6 +49,8 @@ void tl_javaapp_set_paused(bool paused);
 void tl_javaapp_text(const char *utf8);
 void tl_javaapp_text_delete(void);
 void tl_javaapp_text_action(void);
+/* Host edit commands: 1 select all, 2 copy, 3 cut. Unknown commands are ignored. */
+void tl_javaapp_text_command(int command);
 void tl_javaapp_keyboard_closed(void);
 /* The file picker closed: the copies of the n picked files (n = 0: the user cancelled). */
 void tl_javaapp_documents_picked(const char *const *paths, int n);

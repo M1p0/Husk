@@ -1,10 +1,12 @@
 # 独立 APK App 执行方案
 
-状态：**macOS 先行的设计与执行计划。已完成 M1 headless-bootstrap 初版的构建与本地验证；独立 App 外壳、稳定 APK 启动接口与 iOS 设备能力尚未完成。现有 Mac 基线与新动态库证据分别记录。**
+状态：**macOS 先行的设计与执行计划。M1 bootstrap 已验证，现已实现 app profile、稳定 APK 启动接口、独立 `.app` 安装器与 AppKit 系统桥接，正在进行真实双 APK 与版本切换验收。资源强制执行、系统沙箱、自动 GC 和 iOS 设备能力仍未交付。**
 
 编写日期：2026-11-06。源码核查基线：`fcda33e2ee6c63ad2742199016d49bcad2730672`。
 架构约束以[独立 App 运行时设计](07-independent-app-runtime-design.md)为准。
 M1 当前产物与命令见[macOS M1 实现记录](09-macos-runtime-m1.md)，后续能力不得从该 profile 的成功推导为已交付。
+新增 app profile、安装器与真实窗口实现见[macOS 独立 App](11-macos-independent-apps.md)。M2–M5 的功能子集不等于其资源/隔离验收全部完成。
+集成中确认了现有 DVM 缺少可达性 GC，派生 Bitmap 的长期内存回收是独立阻断项，执行细节见[DVM 内存回收方案](12-dvm-memory-reclamation-plan.md)。不能将单次 APK 可用或双进程运行替代该项验收。
 本文安排后续架构实现；现有 Mac 测试入口的基线检查不等于独立 App 架构已交付。未安装或修改 iOS 设备配置。
 旧架构文档描述过不同阶段，不能作为当前多进程能力或未来越狱能力的证明。
 

@@ -821,6 +821,7 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
         EditableInputConnection(TextView v) { super(v, true); mView = v; }
         @Override public Editable getEditable() { return mView.getEditableText(); }
         @Override public boolean performEditorAction(int action) { mView.onEditorAction(action); return true; }
+        @Override public boolean performContextMenuAction(int id) { return mView.onTextContextMenuItem(id); }
         @Override public boolean commitText(CharSequence t, int pos) { if (mView.getEditableText() == null) return false; return super.commitText(t, pos); }
     }
     public void onEditorAction(int action) {

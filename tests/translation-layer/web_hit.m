@@ -37,10 +37,17 @@ int main(void)
     assert(W_frame(NULL, a, &ret));
     assert(tl_web_hit(20, 80));     /* hidden/removed button no longer blocks */
     assert(tl_web_parent_scroll_axes(20, 80) == 3);
+    float rectangles[4] = {0};
+    assert(tl_web_visible_rects(rectangles, 1) == 1);
+    assert(rectangles[0] == 0 && rectangles[1] == 120 && rectangles[2] == 804 && rectangles[3] == 1600);
     a[6].i = 0;
     assert(W_frame(NULL, a, &ret));
     assert(!tl_web_hit(150, 80));   /* another window owns the touch */
     assert(tl_web_parent_scroll_axes(150, 80) == 0);
+    assert(tl_web_visible_rects(rectangles, 1) == 1); /* visible but not touchable still needs a native hole */
+    a[5].i = 0;
+    assert(W_frame(NULL, a, &ret));
+    assert(tl_web_visible_rects(rectangles, 1) == 0);
     forget_hits(1);
     assert(g_nhits == 0);
     assert(tl_web_parent_scroll_axes(150, 80) == 0);

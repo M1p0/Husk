@@ -77,6 +77,12 @@ def main():
                      ROOT / "tests/runtime/context_api_test.c", "-o", api_test])
             result = checked([api_test, a / "lib/libHuskRuntime.dylib"], timeout=15)
             print(result.stdout.strip())
+            app_test = work / "app-api-test"
+            checked(["clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror",
+                     "-I" + str(ROOT / "src/runtime-api"), ROOT / "tests/runtime/app_api_test.m",
+                     "-framework", "Foundation", "-o", app_test])
+            result = checked([app_test, a / "lib/libHuskRuntime.dylib"], timeout=15)
+            print(result.stdout.strip())
             dependencies = checked(["otool", "-L", probe]).stdout
             assert "libHuskRuntime" not in dependencies, dependencies
             undefined = checked(["nm", "-u", probe]).stdout
@@ -129,7 +135,8 @@ def main():
             for info in [first_info, second_info]:
                 assert info["context_copied"] and info["java_worker_stack_bytes"] == 32 << 20
                 assert info["manual_jit_bytes"] == 256 << 20
-                assert info["hard_memory_limit"] == "unsupported" and info["apk_execution"] == "not-implemented"
+                assert info["hard_memory_limit"] == "unsupported"
+                assert info["apk_execution"] in {"not-implemented", "available-not-exercised"}
             lock_a = store / ".leases" / (a.name + ".lock")
             lock_b = store / ".leases" / (b.name + ".lock")
             assert not exclusive_available(lock_a) and not exclusive_available(lock_b)

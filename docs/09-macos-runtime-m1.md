@@ -1,6 +1,8 @@
 # macOS M1：动态 Runtime 与版本加载探针
 
-日期：2026-11-06。状态：**headless-bootstrap 初版已实现并通过本地验证**。它包含真实 native Runtime 动态库和本 profile 的完整资源，但公开 ABI 目前只支持版本查询与进程上下文配置，不启动 Java、JIT 或 APK。
+日期：2026-11-06。状态：**headless-bootstrap 初版已实现并通过本地验证**。它包含真实 native Runtime 动态库和本 profile 的完整资源；这个 profile 的公开接口只做版本查询与进程上下文配置，不启动 Java、JIT 或 APK。
+
+后续已新增可启动 APK 的 `macos-app` profile、独立 app ABI、安装器和真实窗口，见[macOS 独立 App 实现](11-macos-independent-apps.md)。本文保留 bootstrap profile 的验收边界。
 
 独立 Mac `.app`、稳定 ABI 下的 APK 启动/窗口接口、沙箱及资源控制仍属于后续工作。本文不构成 iOS 27 能力证明。对应[架构](07-independent-app-runtime-design.md)与[执行方案](08-independent-app-runtime-execution-plan.md)的 M1。
 
@@ -8,7 +10,7 @@
 
 | 部分 | 实现 |
 |---|---|
-| 真实动态库 | 复用 native-runtime 源码集合，排除 iOS 应用 glue，编入 87 个源文件，不是纯元数据假库 |
+| 真实动态库 | 复用 native-runtime 源码集合，排除 iOS 应用 glue；原始 M1 构建编入 87 个源文件，后续实际源集记录在各版本 manifest 的 `native_sources` |
 | 稳定入口 | `husk_runtime_get_api(abi, table_size)` 返回版本化函数表，客户端不静态编入 Runtime |
 | 上下文 | 复制身份与路径，规范化 Runtime/包/数据/缓存/配置目录，拒绝可写根与只读根重叠 |
 | 生命周期 | 每进程一个活动配置，失败无残留，关闭后可重新配置同一版本；关闭等待日志回调并保护取消临界段 |

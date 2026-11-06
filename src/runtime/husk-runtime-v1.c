@@ -22,6 +22,9 @@
 #ifndef HUSK_RUNTIME_BUILD_ID
 #define HUSK_RUNTIME_BUILD_ID "development"
 #endif
+#ifndef HUSK_RUNTIME_ENABLE_APPS
+#define HUSK_RUNTIME_ENABLE_APPS 0
+#endif
 
 struct husk_runtime_handle {
     husk_runtime_context_v1 context;
@@ -39,7 +42,8 @@ static const husk_runtime_info_v1 g_info = {
     .abi_version = HUSK_RUNTIME_ABI_V1,
     .build_id = HUSK_RUNTIME_BUILD_ID,
     .host_target = "macos-arm64",
-    .capabilities = HUSK_RUNTIME_CAP_CONFIGURE | HUSK_RUNTIME_CAP_NATIVE_CORE_LINKED,
+    .capabilities = HUSK_RUNTIME_CAP_CONFIGURE | HUSK_RUNTIME_CAP_NATIVE_CORE_LINKED |
+        (HUSK_RUNTIME_ENABLE_APPS ? HUSK_RUNTIME_CAP_APK_LAUNCH : 0),
     .hard_memory_limit_state = HUSK_RUNTIME_CAPABILITY_UNSUPPORTED,
     .reserved = 0
 };

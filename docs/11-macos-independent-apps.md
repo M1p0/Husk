@@ -1,0 +1,137 @@
+# macOS 独立 APK App：使用与实现
+
+日期：2026-11-06。目标平台：Apple Silicon macOS。本文记录实际实现；完整隔离目标与 iOS 接入要求见[架构设计](07-independent-app-runtime-design.md)和[执行方案](08-independent-app-runtime-execution-plan.md)。
+
+## 运行方式
+
+```mermaid
+flowchart TB
+    APK["原始 APK"] --> Installer["本地安装器<br/>解析身份、图标，保留原 APK 内容"]
+    Installer --> A["Pikapika.app<br/>独立 Bundle ID + 小型启动器 + APK"]
+    Installer --> B["Jasmine.app<br/>独立 Bundle ID + 小型启动器 + APK"]
+    Publisher["手动构建运行库"] --> V1["不可变 Runtime v1<br/>dylib + Java + 字体/证书 + ANGLE"]
+    Publisher --> V2["不可变 Runtime v2"]
+    Selection["default.json<br/>原子切换新启动的默认版本"] -.-> A
+    Selection -.-> B
+    A --> PA["独立进程 A<br/>固定版本、私有 Java/Go/Dart 堆与 JIT"]
+    B --> PB["独立进程 B<br/>固定版本、私有 Java/Rust/Dart 堆与 JIT"]
+    V1 -->|"dlopen；持有共享版本锁"| PA
+    V2 -->|"dlopen；持有共享版本锁"| PB
+    PA --> DA["A 的 data/cache/config/logs"]
+    PB --> DB["B 的 data/cache/config/logs"]
+    PA --> Mac["各自的 AppKit 窗口<br/>Metal / WebKit / 输入 / 文件 / 音频"]
+    PB --> Mac
+```
+
+共享的是磁盘上的不可变运行库。每个 `.app` 有独立进程，运行库中的可写全局状态、Java/原生堆、线程和 JIT 随所属进程分开。安装器不承载业务，不需要常驻管理进程；关闭安装器不会结束已启动的 App。
+
+macOS 外壳包含独立 Dock/窗口身份、真实 CAMetalLayer 呈现、原生 WKWebView、鼠标点击/拖动/滚轮、键盘及中文输入提交、剪贴板、系统分享、打开 URL 和文件选择。文件选择结果复制进本 App 的 `data/imports`；Android 模拟外部存储位于本 App 的 `data/sdcard`。不会因失去焦点而结束或暂停 App。
+
+## 本地构建与安装
+
+先准备仓库已有的 `build/java-runtime`、`build/android-system` 与 Java 构建所需 JDK/R8。只重建 Java 框架可用：
+
+```sh
+HUSK_JDK=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home \
+HUSK_D8="$PWD/build/tools/r8.jar" \
+src/java-framework/build.sh build/java-runtime/husk-framework.dex
+
+python3 tools/runtime/fetch_macos_fonts.py
+sh scripts/build_macos_runtime.sh --profile macos-app --build-id my-mac-runtime-001
+python3 tools/macos/install_apk.py select build/macos-runtime/my-mac-runtime-001
+python3 tools/macos/install_apk.py settings --store build/macos-runtime --jit-mib 512
+python3 tools/macos/install_apk.py install /absolute/path/application.apk
+python3 tools/macos/install_apk.py list
+```
+
+默认输出 `build/macos-apps/<应用名>.app`，可在 Finder 双击或用 `open` 启动。`--applications` 可以指定其他应用目录；不是必须放在系统 `/Applications`。运行库目录必须保持原路径可访问。
+
+app profile 会复制匹配的 macOS arm64 ANGLE 库及其许可证，运行时不依赖 VS Code 安装。开发构建默认从本机 VS Code 的 Electron 提取；其他来源必须同时显式提供 `--angle-dir` 和与该构建匹配的 `--angle-license`。不修改源应用。manifest 记录来源摘要，并逐文件校验发布包；不接受 iOS/Simulator 的图形库。
+
+中文字体沿用 Husk 的 Noto CJK 来源。完整运行库应在 `resources/android-system/fonts` 带 `NotoSansCJK-Regular.ttc` 及其 OFL 许可证；Java dex、字体、图形和证书都属于同一版本清单。
+
+安装器从同一份 APK 暂存快照解析并发布，原 Downloads 文件不变。Bundle ID 从真实包名稳定派生，APK 文件名使用 SHA256。安装采用目标盘暂存、签名校验、目录互斥和排他原子发布。当前拒绝覆盖已有同包安装；尚未实现 Android 签名连续性验证，因此 APK 自身更新不会借用运行库升级流程覆盖旧应用。
+
+默认数据目录：
+
+```text
+~/Library/Application Support/Husk/Apps/<Bundle ID>/
+  data/             # 持久数据，包括 Android files、数据库和 sdcard
+  cache/            # 可丢弃缓存；正常启动不逐帧写截图
+  config/
+  logs/<generation>.log
+  instance.lock     # 同一 App 的同一数据目录只允许一个执行进程
+  status.json       # PID、执行代次、固定运行库、帧数和 footprint
+```
+
+JIT 是整个 Runtime store 的统一手动设置，2–1024 MiB，默认 512 MiB。每次新启动按该值实际申请并核对容量；不会自动估算、学习、扩容或缩小。Java 启动 worker 保持 32 MiB 原生栈。
+
+### 两个测试 APK 的首次启动
+
+这两个 APK 保留了各自原有的首次入口，后续仍在 App 自己的界面操作：
+
+- Pikapika v1.8.23 首次进入计算器，输入 `77554422` 后按 `=`，再按应用提示关闭并重新打开，进入账户页。
+- Jasmine v1.7.22 首次进入浏览器，在地址栏输入 `jm://start` 并提交，进入登录页。
+
+验收通过真实窗口点击和文本提交走这些流程，持久标志由 APK 自己写入；没有编辑数据库跳过初始化。测试未创建账号，也没有向服务端提交测试用户名和密码。账户验证、漫画内容读取和付费/授权业务需要对应账户与服务另外验收。
+
+## 运行库升级
+
+```mermaid
+sequenceDiagram
+    participant U as 用户/安装器
+    participant S as RuntimeStore
+    participant A as 运行中的 App A
+    participant B as 新启动的 App B
+    A->>S: 锁定并加载 v1，资源路径固定为 v1
+    U->>S: 构建完整 v2 到新目录；校验并发布
+    U->>S: select v2，原子替换 default.json
+    Note over A: 继续使用 v1，不热卸载/替换代码
+    B->>S: 读取默认 v2，持锁、校验后 dlopen
+    Note over B: 使用 v2；不要求重装原 APK
+    A->>A: 用户完全退出，进程结束
+    Note over S: 进程退出由内核释放共享版本锁
+```
+
+发布版本使用新的 build ID，永不覆盖原目录。`select` 验证完整清单、平台、图形依赖及签名后切换默认值。运行中的进程不反复读取默认索引，不 `dlclose`，后台恢复也保持旧版本；彻底退出后再打开才使用新版本。
+
+本实现不自动 GC。`.leases/<build-id>.lock` 是稳定的锁对象，不能替换或删除；任何后续回收器必须先取得该锁的排他持有并排除活动默认版，再回收内容。不能用 `rm -rf` 删除活动版本。现有测试会覆盖多读者、强杀、锁替换和清单破坏。
+
+## 代码边界与移植接口
+
+| 模块 | 当前代码与职责 |
+|---|---|
+| Bootstrap ABI | `src/runtime-api/husk-runtime-v1.h`；版本/能力、显式路径与设置快照，不执行 APK |
+| App ABI | `src/runtime-api/husk-runtime-app-v1.h`；独立 getter、start/stop/state、输入/文本/文件结果与 WebView attach |
+| Runtime bridge | `src/runtime/husk-runtime-app-v1.m`；内部 Java/JNI/ELF/图形初始化、显式资源定位与回调转换 |
+| Mac 窗口宿主 | `tools/macos/HuskAppHost.m`；只含公共头文件，用 dlopen/dlsym 取得两张 ABI 表，无静态 core 依赖 |
+| 发布器 | `tools/runtime/package_macos.py`；完整内容摘要、只读目录、稳定租约与排他发布 |
+| 安装/选择器 | `tools/macos/install_apk.py`；APK 身份/图标、独立 `.app`、默认版本与手动 JIT 设置 |
+| 验收驱动 | `tools/macos/acceptance.py`；真实 AppKit 进程、各自控制/数据/日志、截图与 A 崩溃后 B 连续运行 |
+
+冻结的 app-v1 表前缀允许将来在尾部增加可选接口；新增运行库不能改变既有字段顺序或扩大这个最低前缀要求。新外壳需要更大表时仍检查实际 `struct_size`，不兼容版本会在 Guest 执行前显示错误。首次开发期的候选包不作为已发布的 ABI 兼容承诺。
+
+ABI 使用 `struct_size` 和独立版本号协商，字符串在 start/configure 时复制，宿主视图、layer、回调 userdata 保留到进程退出。剪贴板用调用方缓冲区，避免跨库内存释放约定。start/stop 在 worker 调用，主线程持续运行；一个进程只允许一次 APK 启动尝试。错误或完全关闭都结束该 App 的进程，不复用半初始化状态。
+
+未来 iOS 复用 APK/DEX/ELF、Bionic/JNI、Java 框架、启动 ABI、完整版本清单、持有协议和验收场景；替换 AppKit 窗口/输入、系统注册/容器、签名/JIT、权限/后台及资源限制适配。macOS `.dylib` 和 ANGLE 必须重新编译成正确的 iOS 目标，不能直接拷贝。当前 Mac adapter 有明确平台编译约束；移植工作集中在宿主适配和实机能力验证。
+
+## 验收与保证范围
+
+本实现是 `macos-functional`，尚未声明 `macos-sandboxed`。独立进程和目录不等于系统禁止同用户程序访问另一目录或发信号。内存 footprint 可观测，系统硬限制能力仍为 `unsupported`；共享物理内存和 GPU 意味着不能承诺任意整机压力下 B 永不受影响。没有用整机 OOM 测试代替隔离证明。
+
+本机安全探针 `tools/macos/probe_memory_limit.c` 只对自己的轻量进程请求 64 MiB footprint limit，实际返回 `KERN_NO_ACCESS`（8），没有进行压力分配或修改其他进程。[Apple XNU 对应入口](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/task.c)检查 `proc_check_footprint_priv`；该结果只证明当前宿主身份下不能通过这一接口建立限额，不能泛化为所有 macOS 或未来 iOS 都没有限额能力。
+
+**长期内存验收尚未通过。** 现有 DVM 的 GC 和 Java 终结调度没有实现。新桥接已对原始帧队列、SurfaceTexture producer、NativeWindow/EGL 引用进行显式回收，但应用从 `Bitmap.wrapHardwareBuffer` 取得的独立 Bitmap 会依赖尚缺失的可达性回收。不能提前回收仍可能被应用持有的 Bitmap；也不能因为 ImageReader 队列有限就宣称全部像素内存有界。具体根集合、并发与终结依赖、分阶段实施见[DVM 内存回收方案](12-dvm-memory-reclamation-plan.md)。
+
+真实 APK、交互、退出/重开、双进程故障及版本切换的记录见后续本节更新。已知需要账户或第三方服务的路径，必须分别记录实际成功、外部错误与未测，不用首帧代替业务验收。
+
+公共接口与版本持有回归：
+
+```sh
+sh tests/runtime/run_macos.sh
+python3 tests/translation-layer/run_guest_tls.py
+python3 tests/translation-layer/run_native_window_lifetime.py
+python3 tests/java-framework/run.py
+```
+
+托管 CI/CD 保持关闭；这些都是本地手动命令。
