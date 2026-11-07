@@ -1015,6 +1015,22 @@ static void *b_AFontMatcher_match(const tl_afont_matcher *m, const char *family,
     return afont_new(name);
 }
 
+/* Android's z_crc_t is 32 bits; Darwin's is unsigned long (64 bits on
+ * arm64). A direct binding exposes interleaved zero words to guest callers
+ * that index the CRC table themselves. Keep the guest table's ABI fixed. */
+static uint32_t g_crc_table[256];
+static pthread_once_t g_crc_table_once = PTHREAD_ONCE_INIT;
+static void init_crc_table(void)
+{
+    const z_crc_t *host = get_crc_table();
+    for (unsigned i = 0; i < 256; i++) g_crc_table[i] = (uint32_t)host[i];
+}
+static const uint32_t *b_get_crc_table(void)
+{
+    pthread_once(&g_crc_table_once, init_crc_table);
+    return g_crc_table;
+}
+
 #define MEDIA_NULL(n)  TL_WRAP(n, b_media_null)
 #define MEDIA_ERRF(n)  TL_WRAP(n, b_media_err)
 #define MEDIA_DATA(n)  TL_DATA(#n, &g_##n)
@@ -1023,7 +1039,7 @@ const tl_bionic_entry tl_tab_ndk[] = {
     /* zlib */
     TL_DIRECT(deflate), TL_DIRECT(deflateEnd), TL_DIRECT(deflateInit2_), TL_DIRECT(deflateInit_),
     TL_DIRECT(inflate), TL_DIRECT(inflateEnd), TL_DIRECT(inflateInit2_), TL_DIRECT(inflateInit_), TL_DIRECT(zError),
-    TL_DIRECT(compressBound), TL_DIRECT(zlibVersion), TL_DIRECT(compress), TL_DIRECT(compress2), TL_DIRECT(uncompress), TL_DIRECT(crc32), TL_DIRECT(adler32),
+    TL_DIRECT(compressBound), TL_DIRECT(zlibVersion), TL_DIRECT(compress), TL_DIRECT(compress2), TL_DIRECT(uncompress), TL_DIRECT(crc32), TL_DIRECT(adler32), TL_WRAP("get_crc_table", b_get_crc_table),
     TL_DIRECT(inflateReset), TL_DIRECT(inflateReset2), TL_DIRECT(deflateReset), TL_DIRECT(inflateSync), TL_DIRECT(deflateParams), TL_DIRECT(deflateSetDictionary), TL_DIRECT(inflateSetDictionary),
     /* system fonts */
     TL_WRAP("ASystemFontIterator_open", b_ASystemFontIterator_open), TL_WRAP("ASystemFontIterator_next", b_ASystemFontIterator_next),
