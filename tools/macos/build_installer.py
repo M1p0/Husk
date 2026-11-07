@@ -47,7 +47,7 @@ def main():
         subprocess.run([str(binary), "--make-icon", str(resources / "DefaultAPK.png")], check=True)
         make_icon(resources, (resources / "DefaultAPK.png").read_bytes())
         backend = resources / "engine"
-        for source in ["tools/task_paths.py", "tools/macos/install_apk.py", "LICENSE"]:
+        for source in ["tools/task_paths.py", "tools/macos/install_apk.py", "tools/macos/compat_profiles.py", "LICENSE"]:
             target = backend / source
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / source, target)

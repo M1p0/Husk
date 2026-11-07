@@ -87,6 +87,11 @@ static int writeIcon(NSString *path) {
 @property NSTextField *summary, *message, *nameLabel, *packageLabel, *versionLabel, *pathLabel;
 @property NSImageView *icon;
 @property NSButton *installButton, *cancelButton, *launchButton, *removeButton, *revealButton, *dataButton;
+@property NSPopUpButton *graphicsChoice, *compatibilityChoice;
+@property NSButton *importCompatibility;
+@property NSStackView *configurationView;
+@property NSDictionary *launchOptions;
+@property NSString *optionsApplication;
 @property NSProgressIndicator *progress;
 @property NSArray<NSDictionary *> *apps, *visible;
 @property NSMutableArray<NSString *> *queue;
@@ -143,10 +148,10 @@ static int writeIcon(NSString *path) {
     (void)note;
     self.queue = self.queue ?: [NSMutableArray new];
     self.apps = @[]; self.visible = @[];
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1040, 690)
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1040, 850)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
         backing:NSBackingStoreBuffered defer:NO];
-    self.window.title = @"Husk APK 安装器"; self.window.minSize = NSMakeSize(900, 610); self.window.releasedWhenClosed = NO;
+    self.window.title = @"Husk APK 安装器"; self.window.minSize = NSMakeSize(900, 790); self.window.releasedWhenClosed = NO;
     self.window.contentView = [[InstallerBackground alloc] initWithFrame:self.window.contentView.bounds];
     NSTextField *title = label(@"APK 应用", 28, YES);
     self.summary = label(@"正在读取已安装应用…", 13, NO); self.summary.textColor = NSColor.secondaryLabelColor;
@@ -176,10 +181,22 @@ static int writeIcon(NSString *path) {
     self.revealButton = button(@"在 Finder 中显示", self, @selector(reveal:));
     self.dataButton = button(@"打开数据目录", self, @selector(revealData:));
     self.removeButton = button(@"卸载…", self, @selector(remove:));
+    self.graphicsChoice = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    self.compatibilityChoice = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    self.compatibilityChoice.target = self; self.compatibilityChoice.action = @selector(compatibilityChanged:);
+    self.graphicsChoice.target = self; self.graphicsChoice.action = @selector(saveLaunchConfiguration:);
+    self.importCompatibility = button(@"导入兼容包…", self, @selector(importCompatibilityPack:));
+    self.configurationView = stack(@[label(@"图形后端", 11, NO), self.graphicsChoice,
+        label(@"兼容补丁", 11, NO), self.compatibilityChoice], NSUserInterfaceLayoutOrientationVertical);
+    self.configurationView.spacing = 4;
+    for (NSView *view in @[self.graphicsChoice, self.compatibilityChoice])
+        [view.widthAnchor constraintEqualToConstant:292].active = YES;
     NSTextField *hint = label(@"安装后的应用独立运行。退出安装器不会关闭它们。", 12, NO); hint.textColor = NSColor.secondaryLabelColor;
     NSView *verticalSpace = [NSView new]; [verticalSpace setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
     NSStackView *detail = stack(@[self.icon, self.nameLabel, self.packageLabel, self.versionLabel, self.pathLabel,
-        stack(@[self.installButton, self.cancelButton], NSUserInterfaceLayoutOrientationHorizontal), self.launchButton, self.revealButton, self.dataButton, self.removeButton, verticalSpace, hint, association], NSUserInterfaceLayoutOrientationVertical);
+        stack(@[self.installButton, self.cancelButton], NSUserInterfaceLayoutOrientationHorizontal), self.launchButton,
+        self.configurationView, self.importCompatibility, self.revealButton, self.dataButton, self.removeButton, verticalSpace, hint, association], NSUserInterfaceLayoutOrientationVertical);
+    detail.spacing = 7;
     [detail.widthAnchor constraintEqualToConstant:292].active = YES;
     for (NSTextField *field in @[self.nameLabel, self.packageLabel, self.versionLabel, self.pathLabel, hint]) {
         [field.widthAnchor constraintEqualToAnchor:detail.widthAnchor].active = YES;
@@ -217,7 +234,7 @@ static int writeIcon(NSString *path) {
     (void)sender; if (self.busy) return;
     [self backend:@[@"list", @"--all"] done:^(id value, NSString *error) {
         if (error) [self showMessage:error];
-        else { self.apps = value; [self filter]; if (!self.selectedPath && self.apps.count) self.selectedPath = self.apps[0][@"application"]; }
+        else { self.apps = value; self.optionsApplication = nil; [self filter]; if (!self.selectedPath && self.apps.count) self.selectedPath = self.apps[0][@"application"]; }
         if (self.queue.count && !self.pending) [self previewNext];
     }];
 }
@@ -269,7 +286,77 @@ static int writeIcon(NSString *path) {
     self.launchButton.hidden = !installed; self.launchButton.enabled = installed && !self.busy;
     self.removeButton.hidden = !installed; self.removeButton.enabled = installed && !self.busy;
     self.revealButton.hidden = !installed; self.dataButton.hidden = !installed;
+    self.configurationView.hidden = !installed;
+    self.importCompatibility.enabled = !self.busy;
+    for (NSPopUpButton *choice in @[self.graphicsChoice, self.compatibilityChoice]) choice.enabled = installed && !self.busy && self.launchOptions != nil;
+    if (installed && !self.busy && ![self.optionsApplication isEqual:row[@"application"]]) [self loadLaunchOptions:row];
     [self saveTestState];
+}
+- (void)selectChoice:(NSPopUpButton *)popup identifier:(NSString *)identifier {
+    for (NSMenuItem *item in popup.itemArray) if ([item.representedObject isEqual:identifier]) { [popup selectItem:item]; return; }
+}
+- (void)fillChoice:(NSPopUpButton *)popup items:(NSArray<NSDictionary *> *)items selected:(NSString *)selected {
+    [popup removeAllItems];
+    for (NSDictionary *item in items) { [popup addItemWithTitle:item[@"name"]]; popup.lastItem.representedObject = item[@"id"]; }
+    [self selectChoice:popup identifier:selected];
+}
+- (void)fillGraphics:(NSArray<NSString *> *)values selected:(NSString *)selected {
+    NSDictionary *titles = @{@"auto":@"自动", @"opengles":@"OpenGL ES", @"vulkan":@"Vulkan"};
+    NSMutableArray *items = [NSMutableArray new];
+    for (NSString *value in values) if (titles[value]) [items addObject:@{@"id":value, @"name":titles[value]}];
+    [self fillChoice:self.graphicsChoice items:items selected:selected];
+}
+- (void)loadLaunchOptions:(NSDictionary *)row {
+    NSString *application = row[@"application"];
+    self.optionsApplication = application; self.launchOptions = nil;
+    [self backend:@[@"launch-options", @"--application", application] done:^(id value, NSString *error) {
+        if (![self.selectedPath isEqual:application] || self.pending) { self.optionsApplication = nil; return; }
+        if (error) { [self showMessage:error]; return; }
+        self.launchOptions = value;
+        NSDictionary *selected = value[@"selected"];
+        [self fillChoice:self.compatibilityChoice items:value[@"packs"] selected:selected[@"compatibility"] ?: @"none"];
+        NSArray *graphics = @[@"auto", @"opengles"];
+        for (NSDictionary *pack in value[@"packs"]) if ([pack[@"id"] isEqual:self.compatibilityChoice.selectedItem.representedObject]) graphics = pack[@"graphics"];
+        [self fillGraphics:graphics selected:selected[@"graphics"] ?: @"auto"];
+        if (selected[@"configuration_error"]) [self showMessage:@"保存的运行配置已损坏，请重新选择运行选项。"];
+    }];
+}
+- (void)compatibilityChanged:(id)sender {
+    (void)sender;
+    for (NSDictionary *pack in self.launchOptions[@"packs"]) if ([pack[@"id"] isEqual:self.compatibilityChoice.selectedItem.representedObject]) {
+        [self fillGraphics:pack[@"graphics"] selected:pack[@"default_graphics"]];
+        break;
+    }
+    [self saveLaunchConfiguration:sender];
+}
+- (void)saveLaunchConfiguration:(id)sender {
+    (void)sender; NSDictionary *row = self.selected;
+    if (!row || self.pending || self.busy || !self.launchOptions) return;
+    [self backend:@[@"configure", row[@"application"], @"--runtime", @"default",
+        @"--graphics", self.graphicsChoice.selectedItem.representedObject ?: @"auto", @"--compatibility", self.compatibilityChoice.selectedItem.representedObject ?: @"none",
+        @"--host", [self resource:@"HuskAppHost"]] done:^(id value, NSString *error) {
+        (void)value;
+        if (error) { self.optionsApplication = nil; [self showMessage:error]; [self loadLaunchOptions:row]; return; }
+        self.optionsApplication = nil;
+        [self showMessage:@"运行配置已自动保存，下次打开此应用时生效。"]; [self refresh:nil];
+    }];
+}
+- (void)importCompatibilityPath:(NSString *)path {
+    if (self.busy) return;
+    NSString *store = self.selected[@"runtime_store"] ?: self.config[@"runtime_store"];
+    [self backend:@[@"import-compatibility", path, @"--store", store] done:^(id value, NSString *error) {
+        (void)value;
+        if (error) { [self showMessage:error]; return; }
+        self.optionsApplication = nil;
+        [self showMessage:@"兼容包已导入。为应用选择兼容补丁后即自动保存启用。"]; [self updateDetails];
+    }];
+}
+- (void)importCompatibilityPack:(id)sender {
+    (void)sender; if (self.busy) return;
+    NSOpenPanel *panel = [NSOpenPanel openPanel]; panel.allowedContentTypes = @[UTTypeJSON];
+    [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        if (response == NSModalResponseOK) [self importCompatibilityPath:panel.URL.path];
+    }];
 }
 - (void)enqueue:(NSArray<NSString *> *)files {
     self.queue = self.queue ?: [NSMutableArray new];
@@ -401,7 +488,13 @@ static int writeIcon(NSString *path) {
         @"uninstall_prompt":@(self.uninstallAlert != nil), @"last_launched_pid":@(self.lastLaunchedPID), @"visible_count":@(self.visible.count),
         @"detail_frame":NSStringFromRect(self.nameLabel.frame), @"install_frame":NSStringFromRect(self.installButton.frame),
         @"detail_title":self.nameLabel.stringValue ?: @"", @"window_number":@(self.window.windowNumber)};
-    [[NSJSONSerialization dataWithJSONObject:state options:NSJSONWritingPrettyPrinted error:NULL] writeToFile:[self.testRoot stringByAppendingPathComponent:@"state.json"] atomically:NO];
+    NSMutableDictionary *all = state.mutableCopy;
+    all[@"launch_options"] = self.launchOptions ?: @{};
+    all[@"runtime_editable"] = @NO;
+    all[@"runtime_selection"] = @"default";
+    all[@"graphics_selection"] = self.graphicsChoice.selectedItem.representedObject ?: @"auto";
+    all[@"compatibility_selection"] = self.compatibilityChoice.selectedItem.representedObject ?: @"none";
+    [[NSJSONSerialization dataWithJSONObject:all options:NSJSONWritingPrettyPrinted error:NULL] writeToFile:[self.testRoot stringByAppendingPathComponent:@"state.json"] atomically:NO];
 }
 - (void)tick:(NSTimer *)timer {
     (void)timer; if (!self.testControl) return;
@@ -423,6 +516,15 @@ static int writeIcon(NSString *path) {
             [self.uninstallAlert.buttons.firstObject performClick:nil];
         }
         else if ([action isEqual:@"refresh"]) [self refresh:nil];
+        else if ([action isEqual:@"import-compatibility"]) [self importCompatibilityPath:command[@"manifest"]];
+        else if ([action isEqual:@"configure"]) {
+            NSPopUpButton *choice = command[@"graphics"] ? self.graphicsChoice : self.compatibilityChoice;
+            NSString *value = command[@"graphics"] ?: command[@"compatibility"] ?: @"none";
+            if (!self.busy && choice.enabled) {
+                [self selectChoice:choice identifier:value];
+                [NSApp sendAction:choice.action to:choice.target from:choice];
+            }
+        }
         else if ([action isEqual:@"search"]) { self.search.stringValue = command[@"query"] ?: @""; [self filter]; }
         else if ([action isEqual:@"select"]) { self.pending = nil; self.selectedPath = command[@"application"]; [self filter]; }
         else if ([action isEqual:@"render"]) {

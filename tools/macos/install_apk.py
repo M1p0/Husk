@@ -102,6 +102,8 @@ def managed_application(path: Path) -> dict:
     row["application"] = str(path)
     row["icon"] = str(path / "Contents/Resources/AppIcon.icns")
     row["data_directory"] = str(app_data_base() / identity)
+    from compat_profiles import settings
+    row["launch_configuration"] = settings(row)
     return row
 
 
@@ -644,6 +646,18 @@ def arguments():
     command = commands.add_parser("list", help="list the generated applications")
     command.add_argument("--applications", type=Path, default=DEFAULT_APPLICATIONS)
     command.add_argument("--all", action="store_true", help="include all known installation directories")
+    command = commands.add_parser("launch-options", help="list explicit per-app Runtime and compatibility choices")
+    command.add_argument("--store", type=Path, default=DEFAULT_STORE)
+    command.add_argument("--application", type=Path)
+    command = commands.add_parser("import-compatibility", help="import one compatibility pack without enabling it")
+    command.add_argument("manifest", type=Path)
+    command.add_argument("--store", type=Path, default=DEFAULT_STORE)
+    command = commands.add_parser("configure", help="save this app's cold-start settings and update its launcher")
+    command.add_argument("application", type=Path)
+    command.add_argument("--runtime", default="default")
+    command.add_argument("--graphics", choices=("auto", "opengles", "vulkan"), default="auto")
+    command.add_argument("--compatibility", default="none")
+    command.add_argument("--host", type=Path)
     return parser.parse_args()
 
 
@@ -673,6 +687,16 @@ def main():
         store = options.store.resolve(strict=True)
         atomic_json(store / "settings.json", {"schema": 1, "jit_megabytes": options.jit_mib})
         print(json.dumps({"ok": True, "store": str(store), "jit_megabytes": options.jit_mib}))
+    elif options.command == "launch-options":
+        from compat_profiles import choices
+        row = managed_application(options.application) if options.application else None
+        print(json.dumps(choices(Path(row["runtime_store"]) if row else options.store, row), ensure_ascii=False))
+    elif options.command == "import-compatibility":
+        from compat_profiles import import_pack
+        print(json.dumps(import_pack(options.manifest, options.store), ensure_ascii=False))
+    elif options.command == "configure":
+        from compat_profiles import configure
+        print(json.dumps(configure(options.application.resolve(strict=True), options.runtime, options.graphics, options.compatibility, options.host), ensure_ascii=False))
     else:
         rows = list_applications(tracked_directories() if options.all else [options.applications.expanduser()])
         print(json.dumps(rows, ensure_ascii=False, indent=2))

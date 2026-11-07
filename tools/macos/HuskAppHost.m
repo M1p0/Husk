@@ -9,6 +9,7 @@
 #include <mach/mach.h>
 #include <math.h>
 #include "../../src/runtime-api/husk-runtime-app-v1.h"
+#include "../../src/runtime-api/husk-runtime-patch-v1.h"
 #include "runtime-bundle.h"
 #include "HuskPerformance.h"
 
@@ -17,6 +18,7 @@ static const husk_runtime_app_api_v1 *app_api;
 static husk_runtime_handle *runtime_handle;
 static NSString *runtime_root, *state_root, *generation, *app_id, *frame_root;
 static NSDictionary *options, *app_config;
+static NSDictionary *selected_profile;
 static int runtime_lease = -1, instance_lease = -1;
 static BOOL stopping, running;
 static BOOL owns_instance, app_api_valid;
@@ -48,6 +50,7 @@ static BOOL mkdir_private(NSString *path)
     return [[NSFileManager defaultManager] createDirectoryAtPath:path withIntermediateDirectories:YES
         attributes:@{NSFilePosixPermissions:@0700} error:NULL];
 }
+#include "launch-profile.h"
 static void status(NSString *error)
 {
     if (!owns_instance) return;
@@ -56,6 +59,7 @@ static void status(NSString *error)
     task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vm, &n);
     NSMutableDictionary *value = [@{@"schema":@1, @"pid":@(getpid()), @"app_id":app_id ?: @"",
         @"generation":generation ?: @"", @"runtime":runtime_root ?: @"",
+        @"graphics":selected_profile[@"graphics"] ?: @"auto", @"compatibility":selected_profile[@"compatibility"] ?: @"none",
         @"state":@(app_api_valid ? app_api->state() : HUSK_RUNTIME_APP_IDLE),
         @"window_number":@(window_number),
         @"frames":@(app_api_valid ? app_api->frames() : 0), @"footprint_bytes":@(vm.phys_footprint),
@@ -580,7 +584,7 @@ int main(int argc, char **argv)
         NSSet *keys = [NSSet setWithArray:@[@"--runtime", @"--state-root", @"--control", @"--frame-dir", @"--quit-after"]];
         for (int i = 1; i < argc; i++) {
             NSString *key = str(argv[i]);
-            if ([key isEqual:@"--no-activate"]) { args[key] = @YES; continue; }
+            if ([key isEqual:@"--no-activate"] || [key isEqual:@"--compat-exec"]) { args[key] = @YES; continue; }
             if (![keys containsObject:key] || i + 1 >= argc || args[key]) { fprintf(stderr, "invalid launcher argument\n"); return 2; }
             args[key] = str(argv[++i]);
         }
@@ -596,7 +600,16 @@ int main(int argc, char **argv)
         if (!state_root.isAbsolutePath || !mkdir_private(state_root)) return startup_error(@"无法创建此应用的数据目录，请检查目录权限和可用磁盘空间。", 2);
         state_root = canonical(state_root);
         for (NSString *name in @[@"data", @"cache", @"config", @"logs"]) if (!mkdir_private([state_root stringByAppendingPathComponent:name])) return startup_error(@"无法创建应用的数据或日志目录。", 2);
-        instance_lease = open([state_root stringByAppendingPathComponent:@"instance.lock"].fileSystemRepresentation, O_CREAT|O_RDWR|O_NOFOLLOW|O_CLOEXEC, 0600);
+        NSString *instance_path = [state_root stringByAppendingPathComponent:@"instance.lock"];
+        const char *inherited = getenv("HUSK_COMPAT_INSTANCE_FD");
+        if (args[@"--compat-exec"] && inherited) {
+            char *end = NULL; long descriptor = strtol(inherited, &end, 10);
+            if (!end || *end || descriptor < 3 || descriptor > INT_MAX || !same_lock((int)descriptor, instance_path))
+                return startup_error(@"兼容启动锁无效。", 2);
+            instance_lease = (int)descriptor;
+            fcntl(instance_lease, F_SETFD, FD_CLOEXEC);
+            unsetenv("HUSK_COMPAT_INSTANCE_FD");
+        } else instance_lease = open(instance_path.fileSystemRepresentation, O_CREAT|O_RDWR|O_NOFOLLOW|O_CLOEXEC, 0600);
         if (instance_lease < 0 || flock(instance_lease, LOCK_EX | LOCK_NB)) return startup_error(@"此应用已经在运行。请先关闭现有窗口，再重新打开。", 2);
         owns_instance = YES;
         NSString *log = [[state_root stringByAppendingPathComponent:@"logs"] stringByAppendingPathComponent:[generation stringByAppendingString:@".log"]];
@@ -606,8 +619,12 @@ int main(int argc, char **argv)
         frame_root = args[@"--frame-dir"];
         if (frame_root && (!frame_root.isAbsolutePath || !mkdir_private(frame_root))) return startup_error(@"无法创建指定的测试截图目录。", 2);
         NSString *store = canonical(app_config[@"runtime_store"]);
+        NSString *profile_error = nil;
+        if (!args[@"--runtime"]) selected_profile = launch_profile(state_root, app_config, &profile_error);
+        if (profile_error) return startup_error(profile_error, 2);
         NSDictionary *selection = store ? read_json([store stringByAppendingPathComponent:@"default.json"]) : nil;
-        NSString *version = selection[@"build_id"];
+        NSString *version = selected_profile[@"runtime"];
+        if (!version || [version isEqual:@"default"]) version = selection[@"build_id"];
         runtime_root = args[@"--runtime"] ? canonical(args[@"--runtime"]) :
             ([version isKindOfClass:NSString.class] && safe_relative(version) && ![version containsString:@"/"] ? canonical([store stringByAppendingPathComponent:version]) : nil);
         if (!runtime_root) return startup_error(@"未找到可用的 Husk 运行库。请先构建并选择兼容版本，再重新打开此应用。", 2);
@@ -621,11 +638,17 @@ int main(int argc, char **argv)
         NSString *package = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"package"];
         NSString *apk = [package stringByAppendingPathComponent:app_config[@"apk_file"]];
         if (!safe_file(package, app_config[@"apk_file"]) || ![digest(apk) isEqual:app_config[@"apk_sha256"]]) return startup_error(@"应用内的 APK 已损坏或被替换，请从原始 APK 重新安装。", 2);
+        if (!activate_launch_profile(selected_profile, runtime_root, argc, argv, args[@"--compat-exec"] != nil, &profile_error))
+            return startup_error(profile_error, 2);
+        fprintf(stderr, "host: runtime=%s graphics=%s compatibility=%s\n", runtime_root.UTF8String,
+                [selected_profile[@"graphics"] ?: @"auto" UTF8String], [selected_profile[@"compatibility"] ?: @"none" UTF8String]);
         NSDictionary *settings = read_json([store stringByAppendingPathComponent:@"settings.json"]);
         NSNumber *jit = settings[@"jit_megabytes"] ?: @512;
         if (![jit isKindOfClass:NSNumber.class] || jit.doubleValue != jit.unsignedLongLongValue || jit.intValue < 2 || jit.intValue > 1024) return startup_error(@"手动 JIT 设置无效，请填写 2–1024 MiB 之间的整数后重新打开应用。", 2);
         void *library = dlopen([runtime_root stringByAppendingPathComponent:@"lib/libHuskRuntime.dylib"].fileSystemRepresentation, RTLD_NOW|RTLD_LOCAL);
         if (!library) return startup_error([NSString stringWithFormat:@"无法加载当前运行库，请重新选择兼容版本。\n%@", str(dlerror())], 3);
+        if (!profile_api_compatible(selected_profile, library))
+            return startup_error(@"全局运行库缺少补丁要求的接口版本或能力，请升级运行库。", 3);
         const husk_runtime_api_v1 *(*getter)(uint32_t,uint32_t) = dlsym(library, "husk_runtime_get_api");
         const husk_runtime_app_api_v1 *(*app_getter)(uint32_t,uint32_t) = dlsym(library, "husk_runtime_get_app_api");
         runtime_api = getter ? getter(1, sizeof(*runtime_api)) : NULL;
