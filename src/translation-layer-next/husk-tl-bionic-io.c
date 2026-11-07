@@ -225,6 +225,13 @@ const char *tl_path_resolve(const char *path, char *buf, size_t n)
             size_t l = strlen(roots[i]);
             if (!strncmp(path, roots[i], l) && (path[l] == 0 || path[l] == '/')) { snprintf(buf, n, "%s%s", g_cacerts, path + l); return buf; }
         }
+        const char *root = getenv("ANDROID_ROOT");
+        size_t l = root ? strlen(root) : 0;
+        static const char suffix[] = "/etc/security/cacerts";
+        if (l && !strncmp(path, root, l) && !strncmp(path + l, suffix, sizeof(suffix) - 1) &&
+            (path[l + sizeof(suffix) - 1] == 0 || path[l + sizeof(suffix) - 1] == '/')) {
+            snprintf(buf, n, "%s%s", g_cacerts, path + l + sizeof(suffix) - 1); return buf;
+        }
     }
     /* /system/lib64/libdl.so and the like: the libraries Husk provides itself are files there, as on a phone, so loaders that look
      * for a dependency on disk before loading it (Facebook's SoLoader, in React Native apps) find them. Each is a small ELF stub;

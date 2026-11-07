@@ -264,6 +264,9 @@ def main() -> int:
         if not (java / relative).is_file():
             raise ValueError(f"incomplete Java Runtime: missing {relative}")
     if options.profile == "macos-app":
+        if not any(path.is_file() and re.fullmatch(r"[0-9a-f]{8}\.[0-9]+", path.name)
+                   for path in (system / "cacerts").glob("*")):
+            raise ValueError("missing Android trusted root certificates: android-system/cacerts")
         for relative in ("fonts/NotoSansCJK-Regular.ttc", "fonts/NotoSansCJK-OFL.txt"):
             if not (system / relative).is_file():
                 raise ValueError(f"missing CJK font/notice: {relative}; run python3 tools/runtime/fetch_macos_fonts.py")

@@ -181,7 +181,7 @@ static int32_t app_start(husk_runtime_handle *handle, const husk_runtime_app_con
         g_java_root = [g_runtime_root stringByAppendingPathComponent:@"resources/java-runtime"];
         g_system_root = [g_runtime_root stringByAppendingPathComponent:@"resources/android-system"];
         g_framework_res = [g_java_root stringByAppendingPathComponent:@"framework-res.apk"];
-        g_cacerts = [g_java_root stringByAppendingPathComponent:@"com.android.conscrypt/cacerts"];
+        g_cacerts = [g_system_root stringByAppendingPathComponent:@"cacerts"];
         g_ca_bundle = [g_runtime_root stringByAppendingPathComponent:@"resources/cacert.pem"];
         NSArray<NSString *> *relative_boot = @[@"com.android.art/javalib/core-oj.jar",
             @"com.android.art/javalib/core-libart.jar", @"com.android.art/javalib/okhttp.jar",
@@ -197,6 +197,8 @@ static int32_t app_start(husk_runtime_handle *handle, const husk_runtime_app_con
         }
         if (!readable_file(g_framework_res) || !readable_file(g_ca_bundle))
             return failed(HUSK_RUNTIME_INVALID_PATH, error, capacity, @"Runtime framework resources or CA bundle are missing");
+        if (![[NSFileManager defaultManager] contentsOfDirectoryAtPath:g_cacerts error:NULL].count)
+            return failed(HUSK_RUNTIME_INVALID_PATH, error, capacity, @"Runtime Android trusted certificate directory is missing or empty");
         g_boot_paths = [boot_paths copy];
         char package[512] = {0}, activity[1024] = {0}, application[1024] = {0};
         if (!tl_javaapp_manifest(g_apk.fileSystemRepresentation, package, sizeof(package), activity, sizeof(activity), application, sizeof(application)))
