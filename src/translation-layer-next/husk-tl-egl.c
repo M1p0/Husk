@@ -586,7 +586,7 @@ static const unsigned char *w_glGetString(unsigned name)
     if (source != s) {
         free(filtered);
         size_t len = strlen((const char *)s);
-        filtered = malloc(len + 64);
+        filtered = malloc(len + 1);
         size_t k = 0;
         for (const char *p = (const char *)s; *p;) {
             const char *e = strchr(p, ' ');
@@ -594,8 +594,8 @@ static const unsigned char *w_glGetString(unsigned name)
             if (n && !ext_hidden(p, n)) { if (k) filtered[k++] = ' '; memcpy(filtered + k, p, n); k += n; }
             p += n; if (e) p++;
         }
-        /* The engines that need ES 3.1 buffer textures check for the extension before asking for its entry points. */
-        if (g_es31_shim) { k += (size_t)snprintf(filtered + k, 62, "%sGL_EXT_texture_buffer", k ? " " : ""); }
+        /* Shader rewriting does not implement buffer textures. Preserve the
+         * driver's extension support instead of advertising a no-op entry. */
         filtered[k] = 0;
         source = s;
     }
