@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "id": "mingchao-3.7.1-sdk-thread-probe",
+  "status": "experimental",
+  "platform": "macos-arm64",
+  "android_package": "com.kurogame.mingchao",
+  "android_version": "3.7.1",
+  "apk_sha256": "e7ecbed0856c3e12a8a3d65a20afbd38487b4ff292f7acc996d7bac6c6d28723",
+  "apk_size": 1396309032,
+  "sdk_library": "lib/arm64-v8a/libtprt.so",
+  "sdk_build_id": "6990b5423a5c70c36e213574b4934ceaa0d4e7e6",
+  "sdk_sha256": "1d23cea8ca2dd531a8a67f8cc962f5c381d5c6b49e2ac0e44d3ef84087090f81",
+  "runtime_build_id": "mingchao-nativeactivity-v5",
+  "runtime_sha256": "c0dc33d524ce5e3baa7912152a3f6c1ac2055074a50dff298f3a44f89b80aedc",
+  "start_thunk_offset": "0x28504",
+  "template_sha256": "76fbda91bc4da1413663f93e7973d03a3fd60a44844b44bf0099c906e40a7d38",
+  "edit": {
+    "offset": "0xc8",
+    "expected_hex": "c0035fd600000000",
+    "replacement_hex": "ff430091c0035fd6"
+  },
+  "enable_environment": "HUSK_PATCH_MINGCHAO_THREAD_PROBE=1",
+  "default_enabled": false,
+  "validation": {
+    "native_regression": "passed",
+    "ordinary_host_threads": "passed_with_module_disabled_and_enabled",
+    "sdk_probe_thread": "matched_and_applied_in_nativeactivity_v5_run",
+    "game_startup": "v4_rendered_startup_login_screen_and_audio_v5_restarted_with_formal_modules_180_seconds_no_native_crash",
+    "previous_probe_validation": "matched_and_applied_in_v8_transition_run",
+    "account_login_and_gameplay": "not_tested",
+    "decrypted_code_refresh": "8_independent_processes_and_repeated_translation_passed"
+  },
+  "startup_compat": {
+    "default_enabled": false,
+    "modules": [
+      "UE4 code refresh",
+      "V8 host configuration",
+      "mobile Vulkan selection"
+    ],
+    "decrypted_code_sha256": "359f0b03f0113791d4fe25466df85e85b67489097193f1cd86f21cca47bd78bd",
+    "decrypted_code_check_rva": "0x11b2cda0",
+    "code_refresh_rva": "0x11b20000",
+    "code_refresh_size": "0x6e000",
+    "v8_version": "11.8.172.18",
+    "v8_os_page_size_rva": "0x12dae3d0",
+    "v8_freeze_flags_rva": "0x12dae557",
+    "v8_jitless_rva": "0x12dae080",
+    "moltenvk_version": "1.4.2",
+    "moltenvk_sha256": "aef00b13bcc808adf15b85bef9ae67393d92be7ed5dfe41cad16fa809e4a4c5f"
+  }
+}
