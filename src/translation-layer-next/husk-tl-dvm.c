@@ -1938,6 +1938,10 @@ dispatch:;
     case 0x27: {
         jobj *e = RL(regs, AA);
         if (!e) dvm_throw("java/lang/NullPointerException", "throw with null exception"); else tl_jni_set_pending(e);
+        if (g_dvm_trace >= 1) {
+            char message[1024];
+            tl_log_line("dvm: throw in %s.%s: %s", m->cls->name, m->name, tl_dvm_describe_pending(message, sizeof(message)));
+        }
         goto exception;
     }
     case 0x28: pc += (int8_t)AA; goto dispatch;
