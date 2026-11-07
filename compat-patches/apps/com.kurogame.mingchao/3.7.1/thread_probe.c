@@ -14,7 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "husk-tl-internal.h"
 #include "target.h"
 
 /* Entire observed probe, including the unused word following its return. */
@@ -58,21 +57,25 @@ static int verified;
 static int patched_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)(void *), void *argument)
 {
     const char *enabled = getenv("HUSK_PATCH_MINGCHAO_THREAD_PROBE");
-    Dl_info image; void *context[2];
-    if (enabled && !strcmp(enabled, "1") && dladdr((const void *)start, &image) && image.dli_fname &&
-        (uintptr_t)start - (uintptr_t)image.dli_fbase == TARGET_START_THUNK_OFFSET &&
-        read_memory(argument, context, sizeof(context)) && matches_probe(context[0])) {
+    Dl_info image; void *entry=NULL;
+    void *runtime=NULL;
+    const husk_runtime_patch_api_v1 *api=NULL;
+    if (enabled && !strcmp(enabled,"1") && dladdr((const void *)start,&image) && image.dli_fname &&
+        !strcmp(strrchr(image.dli_fname,'/')?strrchr(image.dli_fname,'/')+1:image.dli_fname,"libHuskRuntime.dylib")) {
+        runtime=dlopen(image.dli_fname,RTLD_NOLOAD|RTLD_LAZY);
+        if (runtime) api=patch_api(runtime,HUSK_RUNTIME_PATCH_TARGET|HUSK_RUNTIME_PATCH_THREAD);
+    }
+    if (api && api->guest_thread_entry(start,argument,&entry) && matches_probe(entry)) {
         pthread_mutex_lock(&gate);
         if (!verified) {
-            void *runtime = dlopen(image.dli_fname, RTLD_NOLOAD | RTLD_LAZY);
             verified = runtime && verify_target(runtime, image.dli_fname) ? 1 : -1;
-            if (runtime) dlclose(runtime);
-            fprintf(stderr, "patch[mingchao-thread-probe]: %s\n", verified == 1 ? "APK, SDK and Runtime fingerprints matched" : "target mismatch; refused");
+            fprintf(stderr, "patch[mingchao-thread-probe]: %s\n", verified == 1 ? "APK/SDK fingerprints and patch ABI matched" : "target mismatch; refused");
         }
         if (verified == 1)
-            fprintf(stderr, "patch[mingchao-thread-probe]: %s entry %p\n", patch_probe(context[0]) ? "applied" : "precondition failed; refused", context[0]);
+            fprintf(stderr, "patch[mingchao-thread-probe]: %s entry %p\n", patch_probe(entry) ? "applied" : "precondition failed; refused", entry);
         pthread_mutex_unlock(&gate);
     }
+    if (runtime) dlclose(runtime);
     return pthread_create(thread, attr, start, argument);
 }
 

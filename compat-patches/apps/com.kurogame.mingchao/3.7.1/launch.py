@@ -40,8 +40,11 @@ def matches(path, expected):
             digest.update(chunk)
     return digest.hexdigest() == expected
 
-if not matches(runtime / 'lib/libHuskRuntime.dylib', target['runtime_sha256']):
-    raise SystemExit('Runtime fingerprint mismatch')
+manifest = json.loads((runtime / 'manifest.json').read_text())
+actual = manifest.get('patch_api', {})
+required = target['patch_api']
+if actual.get('abi_version') != required['patch_abi'] or actual.get('capabilities', 0) & required['capabilities'] != required['capabilities']:
+    raise SystemExit('Runtime patch ABI/capabilities mismatch')
 apks = list((host.parent.parent / 'Resources/package').glob('*.apk'))
 if len(apks) != 1 or not matches(apks[0], target['apk_sha256']):
     raise SystemExit('APK fingerprint mismatch')
@@ -59,7 +62,7 @@ if 'thread-probe' in features:
     selected.append(modules['thread-probe'])
 if features - {'thread-probe'}:
     selected.append(modules['startup'])
-environment.update(DYLD_INSERT_LIBRARIES=':'.join(map(str, selected)), TL_ORIGINAL_CODE_VIEW='1')
+environment.update(DYLD_INSERT_LIBRARIES=':'.join(map(str, selected)))
 for feature, flag in {
     'thread-probe': 'THREAD_PROBE', 'ue4-code': 'UE4_CODE', 'v8': 'V8', 'vulkan': 'VULKAN'
 }.items():

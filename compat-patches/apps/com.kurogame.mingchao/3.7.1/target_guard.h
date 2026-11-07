@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "husk-tl-internal.h"
+#include "husk-runtime-patch-v1.h"
 #include "target.h"
 
 static void digest_hex(const unsigned char digest[CC_SHA256_DIGEST_LENGTH], char out[65])
@@ -40,25 +40,19 @@ static bool file_matches(const char *path, const char *expected)
     return !strcmp(hex, expected);
 }
 
-/* The private zip API is used only with the exact pinned Runtime artifact. */
+static const husk_runtime_patch_api_v1 *patch_api(void *runtime, uint64_t required)
+{
+    husk_runtime_patch_getter_v1 getter=dlsym(runtime,"husk_runtime_get_patch_api");
+    const husk_runtime_patch_api_v1 *api=getter?getter(1,sizeof(*api)):NULL;
+    return api && api->abi_version==1 && api->struct_size>=sizeof(*api) &&
+        (api->capabilities & required)==required?api:NULL;
+}
 static bool verify_target(void *runtime, const char *path)
 {
-    if (!file_matches(path, TARGET_RUNTIME_SHA256)) return false;
-    const tl_zip *(*apk_at)(int) = dlsym(runtime, "tl_ld_apk_at");
-    const tl_zip_entry *(*find)(const tl_zip *, const char *) = dlsym(runtime, "tl_zip_find");
-    bool (*data)(const tl_zip *, const tl_zip_entry *, size_t, const uint8_t **, size_t *, bool *, char *, size_t) = dlsym(runtime, "tl_zip_data");
-    if (!apk_at || !find || !data) return false;
-    for (int i = 0; i < 48; i++) {
-        const tl_zip *apk = apk_at(i); if (!apk) break;
-        if (apk->size != TARGET_APK_SIZE || !memory_matches(apk->map, apk->size, TARGET_APK_SHA256)) continue;
-        const tl_zip_entry *entry = find(apk, "lib/arm64-v8a/libtprt.so");
-        const uint8_t *bytes = NULL; size_t size = 0; bool owned = false; char error[256];
-        if (!entry || !data(apk, entry, 4u << 20, &bytes, &size, &owned, error, sizeof(error))) return false;
-        bool ok = memory_matches(bytes, size, TARGET_SDK_SHA256);
-        if (owned) free((void *)bytes);
-        return ok;
-    }
-    return false;
+    (void)path;
+    const husk_runtime_patch_api_v1 *api=patch_api(runtime,HUSK_RUNTIME_PATCH_TARGET);
+    return api && api->match_apk(TARGET_APK_SIZE,TARGET_APK_SHA256,
+                                "lib/arm64-v8a/libtprt.so",TARGET_SDK_SHA256);
 }
 static bool read_memory(const void *address, void *out, size_t bytes)
 {

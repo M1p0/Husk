@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Explicit, version-pinned experiments. Each feature requires its own flag. */
+/* APK-fingerprinted module on the versioned public patch ABI. */
 #define _DARWIN_C_SOURCE
 #include "target_guard.h"
 
@@ -7,13 +7,7 @@ static void *runtime_handle;
 static char runtime_path[4096];
 static bool use_code, use_v8, use_vulkan;
 static void *(*guest_dlopen)(const char *, int);
-static void (*egl_offscreen)(bool);
-static const char *(*library_name)(const void *);
-static void *(*library_base)(const void *);
-static void *(*library_sym)(void *, const char *);
-static long (*view_delta)(void);
-static bool (*write_code)(const void *, const void *, size_t);
-static bool (*retranslate)(void *, uint64_t, size_t);
+static const husk_runtime_patch_api_v1 *patch;
 
 static bool enabled(const char *name)
 {
@@ -24,16 +18,15 @@ static bool enabled(const char *name)
 static void *open_guest(const char *path, int flags)
 {
     /* ANGLE's capability-probing context must not own Vulkan's drawable. */
-    if (path && !strcmp(path, "libvulkan.so") && egl_offscreen) egl_offscreen(true);
+    if (path && !strcmp(path, "libvulkan.so")) patch->offscreen_gl(1);
     return guest_dlopen(path, flags);
 }
 
 static bool v8_flags(void *lib)
 {
-    uintptr_t data = (uintptr_t)library_base(lib) + view_delta();
-    int *page = (int *)(data + 0x12dae3d0u);
-    unsigned char *freeze = (unsigned char *)(data + 0x12dae557u);
-    unsigned char *jitless = (unsigned char *)(data + 0x12dae080u);
+    int *page = patch->library_data(lib, 0x12dae3d0u, sizeof(int));
+    unsigned char *freeze = patch->library_data(lib, 0x12dae557u, 1);
+    unsigned char *jitless = patch->library_data(lib, 0x12dae080u, 1);
     int old_page = -1;
     unsigned char old_freeze = 255, old_jitless = 255;
     if (!read_memory(page, &old_page, sizeof(old_page)) || old_page != 0 ||
@@ -48,9 +41,10 @@ static bool v8_flags(void *lib)
     return true;
 }
 
-static void on_library_init(void *lib)
+static void on_library_init(void *lib, void *userdata)
 {
-    const char *name = library_name(lib);
+    (void)userdata;
+    const char *name = patch->library_name(lib);
     if (!name || strcmp(strrchr(name, '/') ? strrchr(name, '/') + 1 : name, "libUE4.so")) return;
     if (!verify_target(runtime_handle, runtime_path)) {
         fprintf(stderr, "patch[mingchao-startup]: target fingerprints rejected\n");
@@ -65,8 +59,8 @@ static void on_library_init(void *lib)
     void *functions[2] = {0};
     if (use_vulkan) for (int i = 0; i < 2; i++) {
         unsigned char actual[8];
-        functions[i] = library_sym(lib, symbols[i]);
-        if (!functions[i] || !read_memory((char *)functions[i] + view_delta(), actual, 8) ||
+        functions[i] = patch->library_symbol(lib, symbols[i]);
+        if (!functions[i] || !read_memory(patch->library_data(lib, (uintptr_t)functions[i]-(uintptr_t)patch->library_base(lib), 8), actual, 8) ||
             memcmp(actual, expected[i], 8)) {
             fprintf(stderr, "patch[mingchao-startup]: Vulkan symbol precondition rejected\n");
             return;
@@ -74,10 +68,10 @@ static void on_library_init(void *lib)
     }
     if (use_code) {
         unsigned char bytes[64];
-        const void *original = (char *)library_base(lib) + view_delta() + 0x11b2cda0u;
-        if (!retranslate || !read_memory(original, bytes, sizeof(bytes)) ||
+        const void *original = patch->library_data(lib, 0x11b2cda0u, sizeof(bytes));
+        if (!read_memory(original, bytes, sizeof(bytes)) ||
             !memory_matches(bytes, sizeof(bytes), "359f0b03f0113791d4fe25466df85e85b67489097193f1cd86f21cca47bd78bd") ||
-            !retranslate(lib, 0x11b20000u, 0x6e000u)) {
+            !patch->retranslate(lib, 0x11b20000u, 0x6e000u)) {
             fprintf(stderr, "patch[mingchao-startup]: decrypted Oodle code precondition or translation rejected\n");
             return;
         }
@@ -92,7 +86,7 @@ static void on_library_init(void *lib)
     }
     if (use_vulkan) {
         const unsigned code[] = {0x52800020u, 0xd65f03c0u};
-        for (int i = 0; i < 2; i++) if (!write_code(functions[i], code, sizeof(code))) {
+        for (int i = 0; i < 2; i++) if (!patch->write_code(functions[i], code, sizeof(code))) {
             fprintf(stderr, "patch[mingchao-startup]: Vulkan selection write failed\n");
             return;
         }
@@ -107,40 +101,28 @@ static void *open_runtime(const char *path, int flags)
     bool v8 = enabled("HUSK_PATCH_MINGCHAO_V8");
     bool vulkan = enabled("HUSK_PATCH_MINGCHAO_VULKAN");
     if (!result || !path || !(code || v8 || vulkan) || !strstr(path, "/libHuskRuntime.dylib")) return result;
-    if (!file_matches(path, TARGET_RUNTIME_SHA256)) {
-        fprintf(stderr, "patch[mingchao-startup]: Runtime fingerprint rejected\n");
-        return result;
+    /* RTLD_NOLOAD queries (including thread recognition) reopen the same handle.
+     * Initialization and callback registration are once per Runtime instance. */
+    if (result == runtime_handle) return result;
+    patch=patch_api(result,TARGET_PATCH_CAPABILITIES);
+    if (!patch) {
+        fprintf(stderr,"patch[mingchao-startup]: patch ABI/capabilities unavailable\n");return result;
+    }
+    if (code && !patch->enable_code_views()) {
+        fprintf(stderr,"patch[mingchao-startup]: code views requested after guest loading\n");return result;
     }
     if (vulkan) {
-        const char *driver = getenv("HUSK_PATCH_MINGCHAO_MOLTENVK");
-        if (!driver || !file_matches(driver, "aef00b13bcc808adf15b85bef9ae67393d92be7ed5dfe41cad16fa809e4a4c5f")) {
-            fprintf(stderr, "patch[mingchao-startup]: MoltenVK 1.4.2 fingerprint rejected\n");
-            return result;
-        }
-        void (*configure)(const char *, const char *, int) = dlsym(result, "tl_vk_configure");
-        bool (*available)(void) = dlsym(result, "tl_vk_available");
-        void *(*find)(const char *) = dlsym(result, "tl_bionic_find");
-        void (*interpose)(const char *, void *) = dlsym(result, "tl_ld_interpose");
-        egl_offscreen = dlsym(result, "tl_egl_offscreen_windows");
-        if (!configure || !available || !find || !interpose || !egl_offscreen) return result;
-        configure(driver, NULL, 0);
-        if (!available()) return result;
-        guest_dlopen = find("dlopen");
-        if (!guest_dlopen) return result;
-        interpose("dlopen", open_guest);
+        const char *driver=getenv("HUSK_PATCH_MINGCHAO_MOLTENVK");
+        if (!driver || !file_matches(driver,"aef00b13bcc808adf15b85bef9ae67393d92be7ed5dfe41cad16fa809e4a4c5f") ||
+            !patch->configure_vulkan(driver)) return result;
+        guest_dlopen=patch->guest_symbol("dlopen");if (!guest_dlopen) return result;
+        patch->interpose_guest("dlopen",open_guest);
     }
-    void (*on_init)(void (*)(void *)) = dlsym(result, "tl_ld_on_init");
-    library_name = dlsym(result, "tl_ld_lib_name");
-    library_base = dlsym(result, "tl_ld_lib_base");
-    library_sym = dlsym(result, "tl_ld_sym");
-    view_delta = dlsym(result, "tl_xmem_delta");
-    write_code = dlsym(result, "tl_ld_write_code");
-    retranslate = dlsym(result, "tl_ld_retranslate_range");
-    if (!on_init || !library_name || !library_base || !library_sym || !view_delta || !write_code || (code && !retranslate)) return result;
     runtime_handle = result;
     snprintf(runtime_path, sizeof(runtime_path), "%s", path);
     use_code = code; use_v8 = v8; use_vulkan = vulkan;
-    on_init(on_library_init);
+    if (!patch->add_init_hook(on_library_init,NULL))
+        fprintf(stderr,"patch[mingchao-startup]: initialization hook registration rejected\n");
     return result;
 }
 
