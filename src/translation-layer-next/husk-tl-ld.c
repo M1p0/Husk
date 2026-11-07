@@ -44,7 +44,7 @@ typedef struct { int64_t d_tag; uint64_t d_val; } elf_dyn;
 enum {
     PT_LOAD_ = 1, PT_DYNAMIC_ = 2, PT_TLS_ = 7, PT_GNU_RELRO_ = 0x6474e552,
     DT_NULL_ = 0, DT_NEEDED_ = 1, DT_PLTRELSZ_ = 2, DT_HASH_ = 4, DT_STRTAB_ = 5, DT_SYMTAB_ = 6,
-    DT_RELA_ = 7, DT_RELASZ_ = 8, DT_STRSZ_ = 10, DT_INIT_ = 12, DT_SONAME_ = 14, DT_JMPREL_ = 23,
+    DT_RELA_ = 7, DT_RELASZ_ = 8, DT_STRSZ_ = 10, DT_INIT_ = 12, DT_SONAME_ = 14, DT_SYMBOLIC_ = 16, DT_JMPREL_ = 23,
     DT_INIT_ARRAY_ = 25, DT_INIT_ARRAYSZ_ = 27, DT_FLAGS_ = 30, DT_RELRSZ_ = 35, DT_RELR_ = 36,
     DT_GNU_HASH_ = 0x6ffffef5, DT_ANDROID_RELA_ = 0x60000011, DT_ANDROID_RELASZ_ = 0x60000012,
     DT_ANDROID_RELR_ = 0x6fffe000, DT_ANDROID_RELRSZ_ = 0x6fffe001,
@@ -88,6 +88,8 @@ struct tl_lib {
     struct tl_lib *deps[MAX_DEPS]; /* the closure, breadth-first, excluding self */
     int ndeps;
     bool deps_ready;
+    struct tl_lib *lookup_root;    /* the dlopen root that first brought this dependency into its local group */
+    bool symbolic;
 
     uint8_t *stub_rx, *stub_rw;    /* pages after the image: stubs for rewritten `svc` and x18 sites */
     uint8_t *slots;                /* the data page the stubs of both pools read their run-time values from (SLOT_SVC, SLOT_VX18) */
@@ -565,6 +567,17 @@ static void *lookup_for(tl_lib *L, const char *name, bool *weak_hit)
     for (int i = 0; i < g_ninterpose; i++) if (!strcmp(g_interpose[i].name, name)) return g_interpose[i].fn;
     build_scope(L);
     const elf_sym *s = lib_find(L, name);
+    /* A dependency's weak default-visible definitions can be interposed by
+     * its load root. In particular, a C++ allocator in the root must stay
+     * paired with its deallocator when an object crosses into a dependency.
+     * Existing libraries retain their first group; platform namespaces and
+     * protected/symbolic definitions do not participate in this override. */
+    if (s && (s->st_info >> 4) == STB_WEAK_ && (s->st_other & 3) == 0 && !L->symbolic &&
+        L->lookup_root && L->lookup_root != L && L->lookup_root->system == L->system) {
+        const elf_sym *root = lib_find(L->lookup_root, name);
+        if (root && (root->st_info >> 4) == 1 && (root->st_other & 3) == 0 &&
+            (root->st_info & 0xf) != STT_GNU_IFUNC_) return sym_value(L->lookup_root, root);
+    }
     if (s && (s->st_info & 0xf) != STT_GNU_IFUNC_) return sym_value(L, s);
     if (strcmp(L->soname, "libcocos2dcpp.so") != 0 && is_cxx_runtime_symbol(name)) {
         for (int i = 0; i < L->ndeps; i++) {
@@ -2346,6 +2359,8 @@ static void parse_dynamic(tl_lib *L, uint64_t dyn_vaddr, uint64_t dyn_size)
         case DT_INIT_ARRAY_: L->init_array = d[i].d_val; break;
         case DT_INIT_ARRAYSZ_: L->init_arraysz = d[i].d_val; break;
         case DT_SONAME_: break;     /* read once the string table is known */
+        case DT_SYMBOLIC_: L->symbolic = true; break;
+        case DT_FLAGS_: if (d[i].d_val & 2 /* DF_SYMBOLIC */) L->symbolic = true; break;
         default: break;
         }
     }
@@ -3305,7 +3320,7 @@ static bool in_system_dir(const char *path)
     return false;
 }
 
-static tl_lib *load_locked(const char *name, int depth, bool system)
+static tl_lib *load_locked(const char *name, int depth, bool system, tl_lib *root)
 {
     if (!system && strchr(name, '/') && in_system_dir(name)) system = true;
     tl_lib *L = find_loaded_ns(name, system ? NS_SYSTEM : NS_APP);
@@ -3348,12 +3363,13 @@ static tl_lib *load_locked(const char *name, int depth, bool system)
     free(file);
     if (!L) return NULL;
     L->system = system;
+    L->lookup_root = root && root->system == system ? root : L;
 
     /* Dependencies first, so everything this library binds against exists. */
     for (int i = 0; i < L->nneeded; i++) {
         const char *dn = (const char *)at(L, L->strtab) + L->needed[i];
         if (tl_bionic_is_system_lib(dn)) continue;
-        if (!load_locked(dn, depth + 1, L->system)) tl_log_line("ld: %s: needed library %s could not be loaded", name, dn);
+        if (!load_locked(dn, depth + 1, L->system, L->lookup_root)) tl_log_line("ld: %s: needed library %s could not be loaded", name, dn);
     }
     build_scope(L);
     if (!relocate(L)) return NULL;
@@ -3363,7 +3379,7 @@ static tl_lib *load_locked(const char *name, int depth, bool system)
 tl_lib *tl_ld_load(const char *name)
 {
     pthread_mutex_lock(&g_big);
-    tl_lib *L = load_locked(name, 0, false);
+    tl_lib *L = load_locked(name, 0, false, NULL);
     pthread_mutex_unlock(&g_big);
     return L;
 }
