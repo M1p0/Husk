@@ -556,6 +556,10 @@ bool tl_web_any_visible(void);
 int tl_web_visible_rects(float *rectangles, int capacity);
 dvm_native_fn dvm_android_native(const char *cls, const char *name, const char *sig)
 {
+    if (!strcmp(cls, "android/app/NativeActivity")) { dvm_native_fn tl_nativeactivity_native(const char *, const char *); return tl_nativeactivity_native(name, sig); }
+    if (!strcmp(cls, "android/view/InputQueue") && !strcmp(name, "huskInputPointer") && !strcmp(sig, "()J")) {
+        dvm_native_fn tl_nativeactivity_native(const char *, const char *); return tl_nativeactivity_native(name, sig);
+    }
     if (!strcmp(cls, "husk/Sqlite")) return tl_sqlite_native(name, sig);
     if (!strcmp(cls, "husk/MediaCodecNative")) return tl_media_native(name, sig);
     if (!strcmp(cls, "husk/Web")) return tl_web_native(name, sig);

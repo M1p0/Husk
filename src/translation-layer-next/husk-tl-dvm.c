@@ -2462,6 +2462,7 @@ bool tl_dvm_end_session(void)
     if (!tl_session_stopping() || !tl_session_drained()) return false;
     void tl_audio_reset_session(void), tl_media_reset_session(void), tl_sqlite_reset_session(void);
     tl_audio_reset_session(); tl_media_reset_session(); tl_sqlite_reset_session();
+    { void tl_dvm_nativeactivity_reset(void); tl_dvm_nativeactivity_reset(); }
     tl_dvm_drop_app();
     /* No Java teardown code: canceled execution may have left Java locks or executor bookkeeping unusable.
      * Restore encoded defaults for every linked framework/core class, then run <clinit> normally on next use. */

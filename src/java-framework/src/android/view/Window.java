@@ -208,8 +208,37 @@ public class Window {
     public void setLocalFocus(boolean f, boolean inTouch) {}
     public void injectInputEvent(InputEvent e) {}
     public void takeKeyEvents(boolean b) {}
-    public void takeSurface(SurfaceHolder.Callback2 cb) {}
-    public void takeInputQueue(InputQueue.Callback cb) {}
+    private SurfaceView mNativeSurface;
+    private SurfaceHolder.Callback2 mSurfaceCallback;
+    private InputQueue.Callback mInputCallback;
+    private InputQueue mInputQueue;
+    public void takeSurface(SurfaceHolder.Callback2 cb) {
+        if (cb == mSurfaceCallback) return;
+        SurfaceView old = mNativeSurface;
+        mNativeSurface = null; mSurfaceCallback = cb;
+        if (old != null && old.getParent() instanceof ViewGroup) ((ViewGroup) old.getParent()).removeView(old);
+        if (cb != null) {
+            getDecorView();
+            mNativeSurface = new SurfaceView(mContext);
+            mNativeSurface.getHolder().addCallback(cb);
+            mDecor.addView(mNativeSurface, 0, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        }
+    }
+    public void takeInputQueue(InputQueue.Callback cb) {
+        if (cb == mInputCallback) return;
+        if (mInputQueue != null && mInputCallback != null) mInputCallback.onInputQueueDestroyed(mInputQueue);
+        mInputQueue = null; mInputCallback = cb;
+        if (mDecor != null && mDecor.isAttachedToWindow()) huskNativeAttached();
+    }
+    public void huskNativeAttached() {
+        if (mInputCallback != null && mInputQueue == null) {
+            mInputQueue = new InputQueue(); mInputCallback.onInputQueueCreated(mInputQueue);
+        }
+    }
+    public void huskNativeDetached() {
+        InputQueue queue = mInputQueue; mInputQueue = null;
+        if (queue != null && mInputCallback != null) mInputCallback.onInputQueueDestroyed(queue);
+    }
     public void openPanel(int f, KeyEvent e) {}
     public void closePanel(int f) {}
     public void togglePanel(int f, KeyEvent e) {}
