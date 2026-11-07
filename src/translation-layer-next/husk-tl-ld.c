@@ -929,6 +929,34 @@ long tl_linux_syscall(long a0, long a1, long a2, long a3, long a4, long a5, long
  * answered here as the Linux kernel would: tl_linux_syscall with x8 and x0-x5, the result in x0, everything else as it was.
  */
 #define SVC_MARK 0x000005C5u                       /* udf #0x5c5 */
+#define TPIDR_MARK 0x00005C60u                    /* udf #0x5c60..0x5c7f: destination register */
+#define GENERATED_MARK_SLOTS 65536u
+/* Executable allocations also contain data. Only restore marker words that
+ * we actually inserted, including after byte writes and address reuse. Keys
+ * stay in this bounded lock-free table; bit zero records an active marker. */
+static _Atomic(uintptr_t) g_generated_marks[GENERATED_MARK_SLOTS];
+static _Atomic(size_t) g_generated_active;
+static _Atomic(uintptr_t) *generated_slot(uintptr_t address, bool create)
+{
+    size_t first = ((address >> 2) ^ (address >> 16)) & (GENERATED_MARK_SLOTS - 1);
+    for (size_t i = 0; i < GENERATED_MARK_SLOTS; i++) {
+        _Atomic(uintptr_t) *slot = &g_generated_marks[(first + i) & (GENERATED_MARK_SLOTS - 1)];
+        uintptr_t key = atomic_load(slot);
+        if ((key & ~(uintptr_t)1) == address) return slot;
+        if (!key) {
+            if (!create) return NULL;
+            if (atomic_compare_exchange_strong(slot, &key, address)) return slot;
+            if ((key & ~(uintptr_t)1) == address) return slot;
+        }
+    }
+    return NULL;
+}
+static bool generated_owned(uintptr_t address)
+{
+    _Atomic(uintptr_t) *slot = generated_slot(address, false);
+    return slot && (atomic_load(slot) & 1);
+}
+static void *guest_thread_pointer(void);
 static struct sigaction g_prev_sys, g_prev_ill;
 static bool svc_answer(ucontext_t *uc, uint64_t at, uint64_t next)
 {
@@ -944,6 +972,17 @@ static void svc_signal(int sig, siginfo_t *si, void *ucv)
     ucontext_t *uc = ucv;
     uint64_t pc = (uint64_t)__darwin_arm_thread_state64_get_pc(uc->uc_mcontext->__ss);
     if (sig == SIGILL && pc && *(const uint32_t *)pc == SVC_MARK) { svc_answer(uc, pc, pc + 4); return; }
+    if (sig == SIGILL && pc && (*(const uint32_t *)pc & ~31u) == TPIDR_MARK && generated_owned(pc)) {
+        unsigned rd = *(const uint32_t *)pc & 31u;
+        uint64_t tp = (uintptr_t)guest_thread_pointer();
+        _STRUCT_ARM_THREAD_STATE64 *ss = &uc->uc_mcontext->__ss;
+        if (rd == 18) tl_vx18_set(tp);
+        else if (rd < 29) ss->__x[rd] = tp;
+        else if (rd == 29) __darwin_arm_thread_state64_set_fp(*ss, tp);
+        else if (rd == 30) __darwin_arm_thread_state64_set_lr_fptr(*ss, (void *)(uintptr_t)tp);
+        __darwin_arm_thread_state64_set_pc_fptr(*ss, (void *)(uintptr_t)(pc + 4));
+        return;
+    }
     /* a trapped floating-point exception (EC 0x2c): the guest turned FPCR's trap enables on (Colorful's SDL_mixer divides and
        traps on inexact). Android's cores ignore those bits, Apple's do not: they are cleared and the instruction runs again. */
     if (sig == SIGILL && ((uc->uc_mcontext->__es.__esr >> 26) & 0x3f) == 0x2c) {
@@ -969,12 +1008,91 @@ static void svc_signals_install(void)
 }
 static pthread_once_t g_svc_once = PTHREAD_ONCE_INIT;
 void tl_ld_trap_signals(void) { pthread_once(&g_svc_once, svc_signals_install); }
+static uint32_t generated_original(uint32_t *at)
+{
+    uint32_t word = *at;
+    if (word != SVC_MARK && (word & ~31u) != TPIDR_MARK) return word;
+    _Atomic(uintptr_t) *slot = generated_slot((uintptr_t)at, false);
+    if (!slot || !(atomic_fetch_and(slot, ~(uintptr_t)1) & 1)) return word;
+    atomic_fetch_sub(&g_generated_active, 1);
+    if (word == SVC_MARK) return 0xD4000001u;
+    return 0xD53BD040u | (word & 31u);
+}
+static uint32_t generated_mark(uint32_t *at, uintptr_t executable)
+{
+    uint32_t word = *at, marked;
+    if (word == 0xD4000001u) marked = SVC_MARK;
+    else if ((word & ~31u) == 0xD53BD040u) marked = TPIDR_MARK | (word & 31u);
+    else return word;
+    _Atomic(uintptr_t) *slot = generated_slot(executable, true);
+    if (!slot) {
+        static const char message[] = "Husk: generated instruction marker capacity exhausted\n";
+        write(STDERR_FILENO, message, sizeof(message) - 1);
+        _exit(126);
+    }
+    if (!(atomic_fetch_or(slot, 1) & 1)) atomic_fetch_add(&g_generated_active, 1);
+    return marked;
+}
 void tl_ld_mark_svcs(void *addr, size_t len)
 {
     tl_ld_trap_signals();
     uint32_t *w = addr; size_t n = len / 4, marked = 0;
-    for (size_t i = 0; i < n; i++) if (w[i] == 0xD4000001u) { w[i] = SVC_MARK; marked++; }
-    if (marked) { static int said; if (said++ < 4) tl_log_line("ld: %zu raw svc in generated code at %p marked", marked, addr); }
+    for (size_t i = 0; i < n; i++) {
+        uint32_t value = generated_mark(&w[i], (uintptr_t)&w[i]);
+        if (value != w[i]) { w[i] = value; marked++; }
+    }
+    if (marked) { static int said; if (said++ < 4) tl_log_line("ld: %zu syscall/TLS instructions in generated code at %p marked", marked, addr); }
+}
+void tl_ld_unmark_generated(void *addr, size_t len)
+{
+    if (!atomic_load(&g_generated_active)) return;
+    uintptr_t start = (uintptr_t)addr;
+    for (size_t i = 0; i < GENERATED_MARK_SLOTS; i++) {
+        uintptr_t key = atomic_load(&g_generated_marks[i]), at = key & ~(uintptr_t)1;
+        if ((key & 1) && at >= start && at - start <= len && len - (at - start) >= 4) {
+            uint32_t *word = (uint32_t *)at;
+            *word = generated_original(word);
+        }
+    }
+}
+void tl_ld_forget_generated(void *addr, size_t len)
+{
+    if (!atomic_load(&g_generated_active)) return;
+    uintptr_t start = (uintptr_t)addr;
+    for (size_t i = 0; i < GENERATED_MARK_SLOTS; i++) {
+        uintptr_t key = atomic_load(&g_generated_marks[i]), at = key & ~(uintptr_t)1;
+        if ((key & 1) && at >= start && at - start < len &&
+            (atomic_fetch_and(&g_generated_marks[i], ~(uintptr_t)1) & 1)) atomic_fetch_sub(&g_generated_active, 1);
+    }
+}
+void tl_ld_write_generated(void *rx, void *rw, const void *bytes, size_t len)
+{
+    if (!len) return;
+    /* Packers also allocate RWX directly from the JIT arena and never mprotect
+     * their output. Their stores fault into codewrite. Reconstruct a marked
+     * word before merging a byte/halfword update, then mark complete new words.
+     * Both marker kinds encode the entire original instruction; the bounded
+     * ownership table avoids confusing marker-shaped data with patched code.
+     * No allocation or mutex is needed in this signal path. */
+    uintptr_t first = (uintptr_t)rx & ~(uintptr_t)3;
+    uintptr_t end = ((uintptr_t)rx + len + 3) & ~(uintptr_t)3;
+    uint8_t *base = (uint8_t *)rw - ((uintptr_t)rx - first);
+    for (size_t i = 0; i < (end - first) / 4; i++) {
+        uint32_t *word = (uint32_t *)base + i;
+        uintptr_t at = first + i * 4;
+        if (generated_owned(at)) {
+            uint32_t original = *word == SVC_MARK ? 0xD4000001u :
+                ((*word & ~31u) == TPIDR_MARK ? 0xD53BD040u | (*word & 31u) : *word);
+            _Atomic(uintptr_t) *slot = generated_slot(at, false);
+            if (atomic_fetch_and(slot, ~(uintptr_t)1) & 1) atomic_fetch_sub(&g_generated_active, 1);
+            *word = original;
+        }
+    }
+    memcpy(rw, bytes, len);
+    for (size_t i = 0; i < (end - first) / 4; i++) {
+        uint32_t *word = (uint32_t *)base + i;
+        *word = generated_mark(word, first + i * 4);
+    }
 }
 
 __attribute__((naked, used)) void tl_svc_common(void)
@@ -1202,7 +1320,7 @@ static bool ldr_literal_stub(tl_lib *L, const uint8_t *site_rx, uint32_t rt, con
     if (!stub_slot(L, site_rx, &rx, &rw)) return false;
     if (!e_adrp_ok(rx, src)) { memset(rw, 0, 32); return false; }
     int64_t to = ((int64_t)rx - (int64_t)site_rx) / 4;
-    int64_t back = ((int64_t)(site_rx + 4) - (int64_t)(rx + 12)) / 4;
+    int64_t back = ((int64_t)(site_rx + 4) - (int64_t)(rx + 8)) / 4;
     uint32_t ldr = wide ? e_ldr_lo12(rt, rt, src) : e_ldr_w_lo12(rt, rt, src);
     uint32_t code[8] = {
         e_adrp(rt, rx, src),
@@ -1690,7 +1808,7 @@ emitted:
     return X18_DONE;
 }
 
-static uint8_t *build_data_map(const tl_lib *L, const uint32_t *w, size_t n, uint64_t vstart, size_t *n_data);   /* below, with the unwind tables it reads */
+static uint8_t *build_data_map(const tl_lib *L, const uint32_t *w, size_t n, uint64_t vstart, size_t *n_data, uint8_t **literals);   /* below, with the unwind tables it reads */
 
 /* The cheap test x18_rewrite starts with, and what it would go on to decide: whether this word is an instruction that names x18. */
 static bool x18_rewrite_would_apply(uint32_t insn)
@@ -1758,8 +1876,12 @@ static void patch_image(tl_lib *L, size_t *n_tpidr, size_t *n_adrp, size_t *n_ad
         const uint8_t *x = L->rx + (L->code[r].start - L->base_vaddr);
         size_t nwords = (size_t)((L->code[r].end - L->code[r].start) / 4);
         size_t ndata;
-        uint8_t *dmap = build_data_map(L, w, nwords, L->code[r].start, &ndata);
+        uint8_t *literals = NULL;
+        uint8_t *dmap = build_data_map(L, w, nwords, L->code[r].start, &ndata, &literals);
         for (size_t i = 0; i < nwords; i++) {
+            /* PC-relative loads identify exact data words, including instruction
+             * encodings an SDK interpreter reads as data. Preserve every bit. */
+            if (literals && ((literals[i >> 3] >> (i & 7)) & 1)) continue;
             uint32_t insn = w[i];
             const uint8_t *pc = x + i * 4;
             /* a constant in the code section is not an instruction that happens to name x18 */
@@ -1840,6 +1962,7 @@ static void patch_image(tl_lib *L, size_t *n_tpidr, size_t *n_adrp, size_t *n_ad
             }
         }
         free(dmap);
+        free(literals);
     }
 }
 #else
@@ -2384,11 +2507,13 @@ static bool plausible_word(uint32_t w)
     return g > 3;
 }
 
-static uint8_t *build_data_map(const tl_lib *L, const uint32_t *w, size_t n, uint64_t vstart, size_t *n_data)
+static uint8_t *build_data_map(const tl_lib *L, const uint32_t *w, size_t n, uint64_t vstart, size_t *n_data, uint8_t **literals)
 {
     *n_data = 0;
-    if (n < 32) return NULL;
+    *literals = NULL;
+    if (!n) return NULL;
     uint8_t *bad = calloc((n + 7) / 8, 1), *hot = calloc((n + 7) / 8, 1), *data = calloc((n + 7) / 8, 1);
+    *literals = calloc((n + 7) / 8, 1);
     size_t j = 0; uint64_t max_end = 0;
 #define BIT(m, i) (((m)[(i) >> 3] >> ((i) & 7)) & 1)
 #define SETBIT(m, i) ((m)[(i) >> 3] |= (uint8_t)(1u << ((i) & 7)))
@@ -2433,7 +2558,10 @@ static uint8_t *build_data_map(const tl_lib *L, const uint32_t *w, size_t n, uin
         int64_t t = (int64_t)i + imm;
         unsigned opc = insn >> 30, v = (insn >> 26) & 1;
         unsigned nw = v ? (opc == 0 ? 1 : opc == 1 ? 2 : opc == 2 ? 4 : 0) : (opc == 1 ? 2 : opc == 3 ? 0 : 1);     /* words read: s/w and ldrsw 1, d/x 2, q 4; prfm none */
-        for (unsigned k = 0; k < nw; k++) if (t + k >= 0 && (size_t)(t + k) < n) SETBIT(data, (size_t)(t + k));
+        for (unsigned k = 0; k < nw; k++) if (t + k >= 0 && (size_t)(t + k) < n) {
+            SETBIT(data, (size_t)(t + k));
+            SETBIT(*literals, (size_t)(t + k));
+        }
     }
     for (size_t i = 0; i < n; i++) if (BIT(data, i)) (*n_data)++;
 #undef BIT

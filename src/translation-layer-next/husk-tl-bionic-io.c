@@ -15,6 +15,7 @@ bool tl_ld_covers(const void *addr, size_t bytes);
 #include "husk-tl-internal.h"
 #include "husk-tl-codewrite.h"
 #include "husk-tl-xmem.h"
+#include "husk-tl-ld.h"
 #include "husk-tl-binder.h"
 #include "husk-tl-session.h"
 
@@ -1659,6 +1660,7 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
         TL_ERRNO_BEGIN(); munmap(r, len); TL_ERRNO_END();
         tl_set_guest_errno(13); r = MAP_FAILED;
     }
+    if (r != MAP_FAILED) tl_ld_forget_generated(r, len);
     if (r != MAP_FAILED && (flags & 0x20)) anon_add(r, len);
     mm_trace("mmap", r, len, prot, flags);
     if (r == MAP_FAILED) tl_log_line("mm: mmap FAILED len=%#zx prot=%d flags=%#x errno=%d", len, prot, flags, errno);
@@ -1678,7 +1680,9 @@ static int b_munmap(void *a, size_t l)
     size_t real = phantom_clamp((uintptr_t)a, l);
     if (real == 0) return 0;                                 /* the half of a phantom range that was never mapped */
     anon_remove((uintptr_t)a, real);
-    TL_ERRNO_BEGIN(); int r = munmap(a, real); TL_ERRNO_END(); mm_trace("munmap", a, real, r, errno); return r;
+    TL_ERRNO_BEGIN(); int r = munmap(a, real); TL_ERRNO_END();
+    if (!r) tl_ld_forget_generated(a, real);
+    mm_trace("munmap", a, real, r, errno); return r;
 }
 /* Whether a range is inside memory the guest mapped for itself (not a library's own pages). */
 static bool anon_contains(uintptr_t addr, size_t len)
@@ -1756,7 +1760,9 @@ static int b_mprotect(void *a, size_t l, int prot)
         mm_trace("mprotect", a, l, prot, 0);
         return 0;
     }
-    TL_ERRNO_BEGIN(); int r = mprotect(a, l, prot_filter(prot, "mprotect")); int e = errno; TL_ERRNO_END(); mm_trace("mprotect", a, l, prot, r ? e : 0); return r; }
+    TL_ERRNO_BEGIN(); int r = mprotect(a, l, prot_filter(prot, "mprotect")); int e = errno; TL_ERRNO_END();
+    if (!r && (prot & PROT_WRITE) && b_mprotect_writable(a, l)) tl_ld_unmark_generated(a, l);
+    mm_trace("mprotect", a, l, prot, r ? e : 0); return r; }
 static int b_madvise(void *a, size_t l, int adv)
 {
     mm_trace("madvise", a, l, adv, 0);

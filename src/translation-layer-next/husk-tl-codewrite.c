@@ -59,7 +59,9 @@ static void set_xreg(struct __darwin_arm_thread_state64 *ss, unsigned r, uint64_
 static bool put(uint64_t addr, const void *value, unsigned bytes)
 {
     if (tl_xmem_is_rx((const void *)addr) && tl_xmem_is_rx((const void *)(addr + bytes - 1))) {
-        memcpy((void *)(addr + (uint64_t)tl_xmem_delta()), value, bytes);
+        void *rw = (void *)(addr + (uint64_t)tl_xmem_delta());
+        if (tl_ld_covers((const void *)addr, bytes)) memcpy(rw, value, bytes);
+        else tl_ld_write_generated((void *)addr, rw, value, bytes);
         tl_xmem_flush((const void *)addr, bytes);
         return true;
     }

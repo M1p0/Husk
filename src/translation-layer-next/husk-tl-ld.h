@@ -158,7 +158,7 @@ bool tl_ld_aot_build(const char *name, const uint8_t *file, size_t flen, tl_ld_a
 /* What a dylib made from a library records about it (section __TEXT,__husk_manifest), so the loader only imports a dylib that was
  * made from this exact file by a compatible loader. */
 #define TL_AOT_MAGIC   "HUSKAOT1"
-#define TL_AOT_VERSION 11u         /* bump whenever the rewrites or the dylib's layout change: an old dylib must not be imported */
+#define TL_AOT_VERSION 13u         /* bump whenever the rewrites or the dylib's layout change: an old dylib must not be imported */
 typedef struct tl_aot_manifest {
     char magic[8];
     uint32_t version, page;            /* TL_AOT_VERSION; 16384 */
@@ -177,8 +177,12 @@ void tl_aot_file_name(char *out, size_t n, uint64_t hash, const char *lib_name);
 void tl_ld_set_aot_dir(const char *dir);
 void tl_ld_aot_free(tl_ld_aot_image *img);
 
-/* Before the guest's own memory becomes executable: its raw `svc #0` are marked and answered as Linux system calls. */
+/* Before generated memory executes, mark raw Linux syscalls and Android TLS reads.
+ * write_generated preserves the original instructions across partial code writes. */
 void tl_ld_mark_svcs(void *addr, size_t len);
+void tl_ld_write_generated(void *rx, void *rw, const void *bytes, size_t len);
+void tl_ld_unmark_generated(void *addr, size_t len);
+void tl_ld_forget_generated(void *addr, size_t len);
 
 #ifdef __cplusplus
 }

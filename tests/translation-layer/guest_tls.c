@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "husk-tl-ld.h"
 #include "husk-tl-xmem.h"
+#include "husk-tl-codewrite.h"
 #include <assert.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -8,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -17,6 +19,60 @@ long tl_linux_syscall(long, long, long, long, long, long, long);
 static tl_lib *a, *b;
 static atomic_int arrived;
 static uintptr_t seen[8];
+static uintptr_t (*generated_get)(void);
+static void *generated_worker(void *unused)
+{
+    (void)unused;
+    uintptr_t tp = generated_get();
+    assert(tp && *(uintptr_t *)tp == tp);
+    assert(((uint64_t *)tp)[5] == UINT64_C(0xdeadbeefcafebabe));
+    uintptr_t (*get)(void) = tl_ld_sym(a, "tp0");
+    assert(get() == tp);
+    return NULL;
+}
+static void check_generated_tls(void)
+{
+    tl_codewrite_enable();
+    uint8_t *rx, *rw;
+    assert(tl_xmem_alloc(TL_XMEM_PAGE, &rx, &rw));
+    ((volatile uint32_t *)rx)[16] = 0x00005c60u;
+    ((volatile uint8_t *)rx)[64 + 3] = 0;
+    assert(((uint32_t *)rx)[16] == 0x00005c60u); /* marker-shaped data is not an instruction we rewrote */
+    /* A packer writes into an already executable allocation, a byte at a
+     * time, without a later mprotect. Also change just the MRS destination
+     * after its first execution: the marker must not destroy the other bytes. */
+    const uint32_t code[] = {0xd53bd040u, 0xaa0003e0u, 0xd65f03c0u};
+    for (size_t i = 0; i < sizeof(code); i++) ((volatile uint8_t *)rx)[i] = ((const uint8_t *)code)[i];
+    generated_get = (void *)rx;
+    pthread_t t;
+    assert(!pthread_create(&t, NULL, generated_worker, NULL)); assert(!pthread_join(t, NULL));
+    ((volatile uint8_t *)rx)[0] = 0x41; /* MRS x1, TPIDR_EL0 */
+    ((volatile uint32_t *)rx)[1] = 0xaa0103e0u; /* MOV x0, x1 */
+    assert(!pthread_create(&t, NULL, generated_worker, NULL)); assert(!pthread_join(t, NULL));
+    /* The other producer path writes RW memory, then makes it RX. Restoring
+     * write access must recover the original instruction before a byte edit. */
+    void *(*map)(void *, size_t, int, int, int, off_t) = tl_bionic_find("mmap");
+    int (*protect)(void *, size_t, int) = tl_bionic_find("mprotect");
+    int (*unmap)(void *, size_t) = tl_bionic_find("munmap");
+    size_t page = (size_t)getpagesize();
+    uint32_t *memory = map(NULL, page, 3, 0x22, -1, 0); assert(memory != MAP_FAILED);
+    memory[0] = 0x00005c60u;
+    assert(!protect(memory, page, 3)); assert(memory[0] == 0x00005c60u); /* ordinary data */
+    memcpy(memory, code, sizeof(code));
+    assert(!protect(memory, page, 5)); generated_get = (void *)memory;
+    assert(!pthread_create(&t, NULL, generated_worker, NULL)); assert(!pthread_join(t, NULL));
+    assert(!protect(memory, page, 1)); /* an intermediate read-only mapping keeps marker ownership */
+    assert(!protect(memory, page, 3)); assert(memory[0] == code[0]);
+    ((uint8_t *)memory)[0] = 0x41; memory[1] = 0xaa0103e0u;
+    assert(!protect(memory, page, 5));
+    assert(!pthread_create(&t, NULL, generated_worker, NULL)); assert(!pthread_join(t, NULL));
+    assert(!unmap(memory, page));
+    uint32_t *reused = map(memory, page, 3, 0x32, -1, 0); assert(reused == memory);
+    reused[0] = 0x00005c60u;
+    assert(!protect(reused, page, 3)); assert(reused[0] == 0x00005c60u);
+    assert(!unmap(reused, page));
+    puts("PASS: generated TLS on cold threads, byte-wise RWX emission, partial instruction edits and RW/RX transitions");
+}
 static void *worker(void *arg)
 {
     unsigned id = (unsigned)(uintptr_t)arg;
@@ -60,10 +116,17 @@ int main(int argc, char **argv)
 {
     assert(argc == 3); char error[160]; assert(tl_xmem_open(64u << 20, error, sizeof(error)));
     a = tl_ld_load(argv[1]); b = tl_ld_load(argv[2]); assert(a && b);
+    uint32_t (*literal_mrs)(void) = tl_ld_sym(a, "literal_mrs"), (*literal_svc)(void) = tl_ld_sym(a, "literal_svc");
+    if (!literal_mrs || !literal_svc || literal_mrs() != 0xd53bd040u || literal_svc() != 0xd4000001u) {
+        fprintf(stderr, "FAIL: ARM instruction literals were rewritten as executable code\n"); return 1;
+    }
+    uint32_t (*literal_data)(void) = tl_ld_sym(a, "literal_data");
+    assert(literal_data && literal_data() == 0x1234cafeu);
     pthread_t threads[8];
     for (unsigned i = 0; i < 8; i++) assert(!pthread_create(&threads[i], NULL, worker, (void *)(uintptr_t)i));
     for (unsigned i = 0; i < 8; i++) assert(!pthread_join(threads[i], NULL));
     for (unsigned i = 0; i < 8; i++) for (unsigned j = i + 1; j < 8; j++) assert(seen[i] != seen[j]);
+    check_generated_tls();
     int (*eventfd_create)(unsigned, int) = tl_bionic_find("eventfd"); assert(eventfd_create);
     int fd = eventfd_create(0, 0x800); assert(fd >= 0); uint64_t value = 7, received = 0;
     assert(tl_linux_syscall(fd, (long)&value, 8, 0, 0, 0, 64) == 8);

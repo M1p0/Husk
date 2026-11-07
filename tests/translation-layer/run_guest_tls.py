@@ -45,6 +45,9 @@ assembly += ["str x28, [x19, #224]", "mrs x0, nzcv", "str x0, [x19, #240]", "str
              "ldp x19, x28, [sp], #16", "ret",
              ".globl _small_stack_syscall", "_small_stack_syscall:", "stp x19, x30, [sp, #-16]!", "mov x19, sp",
              "mov sp, x0", "mov x0, #0", "mov x8, #261", "svc #0", "mov sp, x19", "ldp x19, x30, [sp], #16", "ret", "_descriptor_placeholder:", ".space 16"]
+assembly += [".globl _literal_mrs", "_literal_mrs:", "ldr w0, 1f", "ret", "1:", ".long 0xd53bd040",
+             ".globl _literal_svc", "_literal_svc:", "ldr w0, 2f", "ret", "2:", ".long 0xd4000001"]
+assembly += [".globl _literal_data", "_literal_data:", "ldr w0, _descriptor_placeholder", "ret"]
 (OUT / "fixture.s").write_text("\n".join(assembly) + "\n")
 subprocess.run(["clang", "-arch", "arm64", "-c", OUT / "fixture.s", "-o", OUT / "fixture.o"], check=True, env=CHILD_ENV)
 obj = (OUT / "fixture.o").read_bytes()
@@ -77,6 +80,10 @@ for name, delta in exports:
         site = delta + (4 if name == "read_tlsdesc" else 8)
         distance = 0x3000 - (0x1000 + site)
         struct.pack_into("<I", text, site, 0x10000000 | ((distance & 3) << 29) | (((distance >> 2) & 0x7ffff) << 5))
+for name, delta in exports:
+    if name == "literal_data":
+        distance = 0x3000 + 32 - (0x1000 + delta)
+        struct.pack_into("<I", text, delta, 0x18000000 | (((distance // 4) & 0x7ffff) << 5))
 for filename in ["libtls-one.so", "libtls-two.so"]:
     image = bytearray(0x4000)
     image[:64] = struct.pack("<16sHHIQQQIHHHHHH", b"\x7fELF\x02\x01\x01" + b"\0" * 9, 3, 183, 1, 0, 64, 0x2800, 0, 64, 56, 4, 64, 7, 5)
@@ -96,6 +103,7 @@ for filename in ["libtls-one.so", "libtls-two.so"]:
     struct.pack_into("<Q", image, 0x2200, 0x12345678)
     dynamic = [(7, 0xa00), (8, 24), (9, 24), (4, 0x900), (5, 0x400), (6, 0x600), (10, len(strings)), (11, 24), (0, 0)]
     for n, pair in enumerate(dynamic): struct.pack_into("<qQ", image, 0x200 + n * 16, *pair)
+    struct.pack_into("<I", image, 0x3000 + 32, 0x1234cafe)
     image[0x1000:0x1000 + len(text)] = text
     names = b"\0.text\0.dynstr\0.dynsym\0.hash\0.shstrtab\0.tdata\0"
     image[0x2600:0x2600 + len(names)] = names
@@ -109,7 +117,7 @@ if not args.fixtures_only:
         subprocess.run(["bash", ROOT / "tools/regress/build.sh", "tests/translation-layer/guest_tls.c", OUT / "guest-tls-test"], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True, env=CHILD_ENV)
     with (OUT / "results.log").open("w") as log:
         result = subprocess.run([OUT / "guest-tls-test", OUT / "libtls-one.so", OUT / "libtls-two.so"],
-                                cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=CHILD_ENV)
+                                cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=CHILD_ENV, timeout=30)
         log.write(result.stdout)
         print(result.stdout, end="")
         result.check_returncode()
