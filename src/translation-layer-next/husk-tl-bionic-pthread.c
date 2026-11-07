@@ -20,6 +20,8 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <mach/mach_vm.h>
+#include <mach/mach.h>
 #include <sched.h>
 #include <semaphore.h>
 #include <signal.h>
@@ -434,6 +436,16 @@ void tl_thread_altstack(void)
     if (ss.ss_sp) sigaltstack(&ss, NULL);
 }
 static void guest_thread_done(void *unused) { (void)unused; tl_session_worker_done(); }
+static void *start_thunk(void *p);
+bool tl_bionic_guest_thread_entry(const void *start, const void *argument, void **entry)
+{
+    if (start!=(const void *)start_thunk || !argument || !entry) return false;
+    start_ctx context;
+    mach_vm_size_t got=0;
+    if (mach_vm_read_overwrite(mach_task_self(),(mach_vm_address_t)argument,sizeof(context),
+                              (mach_vm_address_t)&context,&got)!=KERN_SUCCESS || got!=sizeof(context)) return false;
+    *entry=(void *)context.fn;return true;
+}
 static void *start_thunk(void *p)
 {
     start_ctx c = *(start_ctx *)p;

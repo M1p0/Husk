@@ -183,6 +183,19 @@ void tl_ld_mark_svcs(void *addr, size_t len);
 void tl_ld_write_generated(void *rx, void *rw, const void *bytes, size_t len);
 void tl_ld_unmark_generated(void *addr, size_t len);
 void tl_ld_forget_generated(void *addr, size_t len);
+/* macOS arm64 JIT capability, disabled by default. Enable before any guest
+ * library load. AOT, Go, build images and mixed writable/code pages retain their
+ * normal mapping; callers must check code_writable before using these APIs.
+ * Code reads support translated literal and locally-derived ADR/ADRP addresses.
+ * All code writes/retranslation require the caller to quiesce executing threads.
+ * Concurrent self-modifying code is outside this interface's contract. */
+bool tl_ld_enable_code_views(void);
+int32_t tl_ld_add_init_hook(void (*callback)(void *, void *), void *userdata);
+void *tl_ld_data_address(tl_lib *library, uint64_t vaddr, size_t bytes);
+void *tl_ld_code_writable(const void *addr, size_t bytes);
+void *tl_ld_code_exec(const void *addr);
+bool tl_ld_write_code(const void *addr, const void *value, size_t bytes);
+bool tl_ld_retranslate_range(tl_lib *lib, uint64_t begin, size_t bytes);
 
 #ifdef __cplusplus
 }

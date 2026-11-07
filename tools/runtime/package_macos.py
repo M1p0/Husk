@@ -73,6 +73,7 @@ def source_files() -> list[Path]:
     sources += [old / name for name in
                 ("husk-tl-elf.c", "husk-tl-zip.c", "husk-tl-sound.c")]
     sources += [ROOT / "src/runtime/husk-runtime-v1.c",
+                ROOT / "src/runtime/husk-runtime-patch-v1.c",
                 ROOT / "src/runtime/husk-runtime-app-v1.m"]
     for path in sources:
         if not path.is_file():
@@ -302,6 +303,7 @@ def main() -> int:
         (staging / "include").mkdir()
         shutil.copy2(public_header, staging / "include/husk-runtime-v1.h")
         shutil.copy2(ROOT / "src/runtime-api/husk-runtime-app-v1.h", staging / "include/husk-runtime-app-v1.h")
+        shutil.copy2(ROOT / "src/runtime-api/husk-runtime-patch-v1.h", staging / "include/husk-runtime-patch-v1.h")
         artifacts = {}
         for path in sorted(staging.rglob("*")):
             if path.is_symlink():
@@ -317,11 +319,14 @@ def main() -> int:
         manifest = {
             "schema": 1, "abi_version": 1, "build_id": build_id,
             "host_target": TARGET, "profile": options.profile,
+            "patch_api": {"abi_version": 1, "capabilities": 31 if graphics else 15},
             "created_at": datetime.now(timezone.utc).isoformat(),
             "source_revision": revision,
             "source_tree_sha256": source_digest,
             "native_sources": [path.relative_to(ROOT).as_posix() for path in sources],
             "features": {"native_core": "included", "context_bootstrap": "supported",
+                         "code_read_views": "opt-in-macos-arm64-jit",
+                         "code_retranslation": "explicit-quiescent-range",
                          "apk_execution": "supported" if graphics else "unsupported",
                          "graphics_backend": "angle-metal" if graphics else "unsupported",
                          "system_memory_limit": "unsupported", "sandbox_isolation": "unverified"},

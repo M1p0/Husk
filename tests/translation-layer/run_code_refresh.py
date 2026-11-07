@@ -45,8 +45,9 @@ subprocess.run(['xcrun', 'clang', '--target=aarch64-linux-android29', '-fPIC', '
                 '-o', str(out / 'fixture.o')], env=environment, check=True)
 subprocess.run([str(linker), *flavor, '-shared', '--hash-style=both', '-soname', 'librefresh.so',
                 str(out / 'fixture.o'), '-o', str(out / 'librefresh.so')], env=environment, check=True)
-os.environ['TL_ORIGINAL_CODE_VIEW'] = '1'
 runtime = ctypes.CDLL(str(args.runtime.resolve(strict=True) / 'lib/libHuskRuntime.dylib'))
+runtime.tl_ld_enable_code_views.restype = ctypes.c_bool
+assert runtime.tl_ld_enable_code_views()
 runtime.tl_set_data_dir.argtypes = [ctypes.c_char_p]
 runtime.tl_set_data_dir(bytes(out))
 runtime.tl_ld_load.argtypes = [ctypes.c_char_p]
@@ -73,6 +74,10 @@ before = test()
 assert before == 0
 assert not runtime.tl_ld_retranslate_range(lib, function - base + 1, 16)
 assert not runtime.tl_ld_retranslate_range(lib, 0, 16)
+assert not runtime.tl_ld_enable_code_views(), 'late mode changes must be rejected'
+for begin, size in [(function - base, 0), (function - base, 3), (function - base, (16 << 20) + 4),
+                    (2**64 - 4, 16)]:
+    assert not runtime.tl_ld_retranslate_range(lib, begin, size)
 results = []
 for _ in range(8):
     assert runtime.tl_ld_retranslate_range(lib, function - base, 16)

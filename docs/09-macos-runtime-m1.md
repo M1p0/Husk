@@ -142,3 +142,13 @@ sh tests/runtime/run_macos.sh --versions \
 各 APK 使用独立数据、控制与帧目录，有进程级超时和精确回收。显式继承的共享锁 FD 保持到 harness 退出；不会清理其他测试程序。原有 harness 只增加 `TL_HTTP_LEGACY` 与 `TL_FRAMEDIR` 路径覆盖，生产 Runtime、手动 JIT 与线程栈未改。
 
 报告分别记录退出码、崩溃、帧计数、主位图是否均匀以及截图路径。白帧和正常退出不能认定为正确 UI；实际界面仍须检查。首次用户 APK 实测的结果与静态对照见[实测记录](10-macos-runtime-apk-validation.md)。
+
+## 8. 公开补丁接口与全局更新
+
+`include/husk-runtime-patch-v1.h` 定义 `husk_runtime_get_patch_api(1, caller_size)`。ABI 1 的布局和既有语义固定，后续新增 ABI 应保留旧版本适配。补丁声明 ABI 和能力位；安装器先检查清单，宿主打开 dylib 后再检查实际函数表。应用统一保存 `runtime: default`，跟随中央全局版本；补丁不固定 Runtime 构建号或 dylib 哈希，也不携带 Runtime。
+
+库句柄不暴露内部对象布局。初始化回调在加载线程完成库构造函数后、初始化返回前调用；最多注册 16 个，须在任何 guest 库加载前注册，模块和 userdata 存活到进程结束。库名、符号、数据视图、guest 线程入口识别和符号插入均通过函数表访问。线程识别由提供者解读自己的启动参数，模块不依赖 thunk 偏移或参数布局。
+
+代码视图默认关闭，须在 guest 加载前显式请求；代码修改和有限范围重翻译仍要求调用者保证相应线程处于安全点。游戏/SDK 文件指纹、偏移和修改前置条件全部留在单独模块中。ABI 兼容的全局构建更新无需修改应用配置或重编译模块。
+
+`tests/runtime/patch_api_test.c` 配合 `patch_thread_capture.c` 检查错误 ABI/表长拒绝、能力位、真实 guest 线程入口、非法线程参数、多个回调及不透明库访问。真实 APK 验证还需确认同一补丁文件和应用配置在两个不同全局构建上均能启动。

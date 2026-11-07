@@ -58,6 +58,8 @@ static void set_xreg(struct __darwin_arm_thread_state64 *ss, unsigned r, uint64_
 /* Store `bytes` of a register's value at the executable address `addr`, through the writable view. */
 static bool put(uint64_t addr, const void *value, unsigned bytes)
 {
+    if (tl_ld_code_writable((const void *)addr, bytes))
+        return tl_ld_write_code((const void *)addr, value, bytes);
     if (tl_xmem_is_rx((const void *)addr) && tl_xmem_is_rx((const void *)(addr + bytes - 1))) {
         void *rw = (void *)(addr + (uint64_t)tl_xmem_delta());
         if (tl_ld_covers((const void *)addr, bytes)) memcpy(rw, value, bytes);
@@ -200,12 +202,14 @@ static void on_fault(int sig, siginfo_t *info, void *uc)
          * in the signed image. Must not decode the instruction at the faulting PC first:
          * that address is often unmapped. */
         void *exec = tl_ld_aot_exec((const void *)(uintptr_t)u->uc_mcontext->__ss.__pc);
+        if (!exec) exec = tl_ld_code_exec((const void *)(uintptr_t)u->uc_mcontext->__ss.__pc);
         if (exec) {
             u->uc_mcontext->__ss.__pc = (uint64_t)(uintptr_t)exec;
             g_emulated++;
             return;
         }
-        if (info && (tl_xmem_is_rx(info->si_addr) || tl_ld_aot_writable(info->si_addr, 1)) && emulate(u->uc_mcontext)) {
+        if (info && (tl_xmem_is_rx(info->si_addr) || tl_ld_aot_writable(info->si_addr, 1) ||
+                     tl_ld_code_writable(info->si_addr, 1)) && emulate(u->uc_mcontext)) {
             u->uc_mcontext->__ss.__pc += 4;
             g_emulated++;
             return;

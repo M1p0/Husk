@@ -19,6 +19,42 @@ long tl_linux_syscall(long, long, long, long, long, long, long);
 static tl_lib *a, *b;
 static atomic_int arrived;
 static uintptr_t seen[8];
+static void check_original_code_views(void)
+{
+    if (!getenv("TL_CODE_VIEWS_TEST")) return;
+    uint32_t *(*original_address)(void) = tl_ld_sym(a, "original_code_address");
+    uint64_t *(*data_address)(void) = tl_ld_sym(a, "data_address");
+    uint64_t (*read_value)(void) = tl_ld_sym(a, "read_value");
+    void (*write_value)(uint64_t) = tl_ld_sym(a, "write_value");
+    uintptr_t (*get_tp)(void) = tl_ld_sym(a, "tp0");
+    assert(original_address && data_address && read_value && write_value && get_tp);
+    uint32_t (*read_adr)(void) = tl_ld_sym(a, "read_adr_code");
+    uint32_t (*read_adrp)(void) = tl_ld_sym(a, "read_adrp_code");
+    void *(*direct_address)(void) = tl_ld_sym(a, "direct_code_address");
+    void *(*page_address)(void) = tl_ld_sym(a, "page_code_address");
+    uint32_t (*read_indexed)(void) = tl_ld_sym(a, "read_indexed_code");
+    if (!read_indexed || read_indexed() != 0xd53bd040u) {
+        fprintf(stderr, "FAIL: delayed indexed code-table read used translated bytes\n"); exit(1);
+    }
+    assert(read_adr && read_adrp && direct_address && page_address);
+    assert(read_adr() == 0xd53bd040u && read_adrp() == 0xd53bd040u);
+    assert(direct_address() == (void *)get_tp && page_address() == (void *)get_tp);
+    uint32_t *original = original_address();
+    assert(original[0] == 0xd53bd040u && tl_ld_code_writable(original, 4));
+    assert(((uintptr_t (*)(void))(original - 1))() == get_tp()); /* a code pointer formed from its data view still executes */
+    assert(((uint32_t *)get_tp)[1] != original[0]); /* execution uses the translated TLS read */
+    data_address()[4] = 0x123456789ull; assert(read_value() == 0x123456789ull);
+    write_value(0x987654321ull); assert(data_address()[4] == 0x987654321ull);
+    uintptr_t tp = get_tp();
+    ((volatile uint8_t *)original)[0] = 0x41;
+    ((volatile uint32_t *)original)[1] = 0xaa0103e0u;
+    assert(original[0] == 0xd53bd041u && get_tp() == tp);
+    /* A write through the executable address also updates original data reads. */
+    ((volatile uint8_t *)get_tp)[4] = 0x40;
+    ((volatile uint32_t *)get_tp)[2] = 0xaa0003e0u;
+    assert(original[0] == 0xd53bd040u && get_tp() == tp);
+    puts("PASS: original instruction reads, translated execution, coherent mutable data and partial code writes through both views");
+}
 static uintptr_t (*generated_get)(void);
 static void *generated_worker(void *unused)
 {
@@ -114,6 +150,7 @@ static void *worker(void *arg)
 }
 int main(int argc, char **argv)
 {
+    if (getenv("TL_CODE_VIEWS_TEST")) assert(tl_ld_enable_code_views());
     assert(argc == 3); char error[160]; assert(tl_xmem_open(64u << 20, error, sizeof(error)));
     a = tl_ld_load(argv[1]); b = tl_ld_load(argv[2]); assert(a && b);
     uint32_t (*literal_mrs)(void) = tl_ld_sym(a, "literal_mrs"), (*literal_svc)(void) = tl_ld_sym(a, "literal_svc");
@@ -122,11 +159,19 @@ int main(int argc, char **argv)
     }
     uint32_t (*literal_data)(void) = tl_ld_sym(a, "literal_data");
     assert(literal_data && literal_data() == 0x1234cafeu);
+    if (getenv("TL_CODE_VIEWS_TEST")) {
+        uint32_t (*read_literal_code)(void) = tl_ld_sym(a, "read_literal_code");
+        uintptr_t (*read_tp)(void) = tl_ld_sym(a, "tp0");
+        if (!read_literal_code || !read_tp || read_literal_code() != 0xd53bd040u || read_tp() < 0x100000) {
+            fprintf(stderr, "FAIL: a literal-read instruction must also execute with Android TLS\n"); return 1;
+        }
+    }
     pthread_t threads[8];
     for (unsigned i = 0; i < 8; i++) assert(!pthread_create(&threads[i], NULL, worker, (void *)(uintptr_t)i));
     for (unsigned i = 0; i < 8; i++) assert(!pthread_join(threads[i], NULL));
     for (unsigned i = 0; i < 8; i++) for (unsigned j = i + 1; j < 8; j++) assert(seen[i] != seen[j]);
     check_generated_tls();
+    check_original_code_views();
     int (*eventfd_create)(unsigned, int) = tl_bionic_find("eventfd"); assert(eventfd_create);
     int fd = eventfd_create(0, 0x800); assert(fd >= 0); uint64_t value = 7, received = 0;
     assert(tl_linux_syscall(fd, (long)&value, 8, 0, 0, 0, 64) == 8);
